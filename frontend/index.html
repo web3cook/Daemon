@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SIP — Coming Soon</title>
+  <meta name="description" content="Non-custodial on-chain DCA platform. Coming soon." />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&family=Lora:ital,wght@0,400;0,500;1,400&family=Caveat:wght@500;600&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --cream:       #FFF8F0;
+      --forest:      #4A7C59;
+      --deep-forest: #2D5016;
+      --coal:        #2C3E2D;
+      --mist:        #C8DFC8;
+      --rose:        #D4896A;
+      --parchment:   #F0E8D8;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--cream);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Lora', Georgia, serif;
+      color: var(--coal);
+      overflow: hidden;
+      position: relative;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 20% 20%, rgba(212,137,106,0.15) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 60% at 80% 80%, rgba(200,223,200,0.30) 0%, transparent 70%),
+        radial-gradient(ellipse 70% 40% at 50% 50%, rgba(255,248,240,0.8) 0%, transparent 100%);
+      pointer-events: none;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2rem 1.5rem;
+      max-width: 560px;
+      width: 100%;
+    }
+
+    /* ── Brand tag ── */
+    .brand {
+      font-family: 'Caveat', cursive;
+      font-size: 1.1rem;
+      color: var(--forest);
+      margin-bottom: 2.5rem;
+      letter-spacing: 0.02em;
+    }
+    .brand a {
+      color: inherit;
+      text-decoration: none;
+      opacity: 0.75;
+      transition: opacity 0.2s;
+    }
+    .brand a:hover { opacity: 1; }
+
+    /* ── Animation: growing bar chart ── */
+    .gif-wrap {
+      margin: 0 auto 2.5rem;
+      width: 160px;
+      height: 100px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 8px;
+      padding-bottom: 4px;
+    }
+
+    .bar {
+      width: 22px;
+      border-radius: 4px 4px 0 0;
+      transform-origin: bottom;
+      animation: grow 2s ease-in-out infinite alternate;
+    }
+    .bar:nth-child(1) { background: var(--mist);        animation-delay: 0s;    }
+    .bar:nth-child(2) { background: var(--rose);        animation-delay: 0.15s; }
+    .bar:nth-child(3) { background: var(--forest);      animation-delay: 0.3s;  }
+    .bar:nth-child(4) { background: var(--deep-forest); animation-delay: 0.45s; }
+
+    @keyframes grow {
+      0%   { height: 20px; opacity: 0.6; }
+      100% { height: 80px; opacity: 1;   }
+    }
+
+    /* ── Heading ── */
+    h1 {
+      font-family: 'Klee One', Georgia, serif;
+      font-size: clamp(2rem, 6vw, 3rem);
+      font-weight: 600;
+      line-height: 1.15;
+      color: var(--coal);
+      margin-bottom: 0.6rem;
+    }
+
+    .accent {
+      font-family: 'Caveat', cursive;
+      font-size: clamp(1.3rem, 4vw, 1.7rem);
+      color: var(--rose);
+      display: block;
+      margin-bottom: 0.4rem;
+    }
+
+    p {
+      font-size: 1rem;
+      line-height: 1.7;
+      color: rgba(44,62,45,0.65);
+      margin-top: 1rem;
+      max-width: 420px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      justify-content: center;
+      margin-top: 1.8rem;
+    }
+    .tag {
+      background: var(--parchment);
+      color: var(--deep-forest);
+      font-size: 0.75rem;
+      padding: 0.3rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid rgba(212,137,106,0.25);
+      font-family: 'Lora', serif;
+    }
+
+    .back {
+      margin-top: 3rem;
+      font-family: 'Lora', serif;
+      font-size: 0.875rem;
+      color: rgba(44,62,45,0.45);
+      text-decoration: none;
+      transition: color 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .back:hover { color: var(--forest); }
+
+    .leaf {
+      position: fixed;
+      width: 8px;
+      height: 8px;
+      border-radius: 0 100% 0 100%;
+      background: var(--mist);
+      opacity: 0;
+      animation: fall linear infinite;
+      pointer-events: none;
+    }
+
+    @keyframes fall {
+      0%   { transform: translateY(-10px) rotate(0deg);   opacity: 0; }
+      10%  { opacity: 0.6; }
+      90%  { opacity: 0.3; }
+      100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="leaf" style="left:10%; width:10px;height:10px; animation-duration:8s;  animation-delay:0s;"></div>
+  <div class="leaf" style="left:30%; width:6px;height:6px;  animation-duration:12s; animation-delay:3s; background:#D4896A; opacity:0.4;"></div>
+  <div class="leaf" style="left:65%; width:9px;height:9px;  animation-duration:9s;  animation-delay:5s;"></div>
+  <div class="leaf" style="left:82%; width:7px;height:7px;  animation-duration:14s; animation-delay:1s; background:#D4896A; opacity:0.4;"></div>
+  <div class="leaf" style="left:50%; width:5px;height:5px;  animation-duration:11s; animation-delay:7s;"></div>
+
+  <div class="container">
+    <div class="brand">
+      a <a href="https://web3cook.com" target="_blank" rel="noopener">web3cook</a> product
+    </div>
+
+    <div class="gif-wrap">
+      <div class="bar"></div>
+      <div class="bar"></div>
+      <div class="bar"></div>
+      <div class="bar"></div>
+    </div>
+
+    <span class="accent">Automate your investments, on-chain</span>
+    <h1>SIP</h1>
+
+    <p>
+      Non-custodial DCA platform for EVM chains. Set an amount, pick an interval —
+      your tokens land directly in your wallet. No custody. No compromise.
+    </p>
+
+    <div class="tags">
+      <span class="tag">DeFi</span>
+      <span class="tag">DCA</span>
+      <span class="tag">Smart Contracts</span>
+      <span class="tag">EVM</span>
+    </div>
+
+    <a class="back" href="https://web3cook.com" target="_blank" rel="noopener">
+      ← web3cook.com
+    </a>
+  </div>
+
+</body>
+</html>
