@@ -552,7 +552,7 @@
 
         <div class="fg">
           <label>Investment Period</label>
-          <div class="year-btns">
+          <div class="year-btns" id="year-btns">
             <button class="yr-btn" data-years="2">2Y<span class="best-badge">best</span></button>
             <button class="yr-btn active" data-years="3">3Y<span class="best-badge">best</span></button>
             <button class="yr-btn" data-years="4">4Y<span class="best-badge">best</span></button>
@@ -676,9 +676,46 @@
 
     function datesFromYears(years) {
       const today = new Date();
-      const start = new Date(today);
-      start.setFullYear(today.getFullYear() - years);
+      const start = new Date(today.getTime() - years * 365 * 86400000);
       return { startDate: toDateStr(start), endDate: toDateStr(today) };
+    }
+
+    // Ordered candidate periods — frontend mirrors backend PERIOD_CANDIDATES
+    const PERIOD_CANDIDATES = [
+      { label: '3M',   years: 0.25 },
+      { label: '6M',   years: 0.5  },
+      { label: '9M',   years: 0.75 },
+      { label: '1Y',   years: 1    },
+      { label: '1.5Y', years: 1.5  },
+      { label: '2Y',   years: 2    },
+      { label: '3Y',   years: 3    },
+      { label: '4Y',   years: 4    },
+      { label: '5Y',   years: 5    },
+    ];
+
+    function periodsFromDays(totalDays) {
+      const availableYears = totalDays / 365;
+      const fitting = PERIOD_CANDIDATES.filter(p => p.years <= availableYears * 0.95);
+      return fitting.length ? fitting.slice(-4) : [PERIOD_CANDIDATES[0]]; // last 4 that fit
+    }
+
+    async function fetchTokenInfo(coinId) {
+      try {
+        const res = await fetch(`${BACKEND}/api/token-info/${encodeURIComponent(coinId)}`);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch { return null; }
+    }
+
+    function renderYearButtons(periods) {
+      const container = $('year-btns');
+      container.innerHTML = periods.map(p =>
+        `<button class="yr-btn" data-years="${p.years}">${p.label}<span class="best-badge">best</span></button>`
+      ).join('');
+      container.querySelectorAll('.yr-btn').forEach(btn =>
+        btn.addEventListener('click', () => { setYears(+btn.dataset.years); handleSimulate(); })
+      );
+      return periods[periods.length - 1].years; // default to longest available
     }
 
     // ─── Formatters ───────────────────────────────────────────────────────────
@@ -724,17 +761,13 @@
 
     function setYears(years, markBest = false) {
       selectedYears = years;
-      if (markBest) bestYears = years; // only update when backend explicitly says so
+      if (markBest) bestYears = years;
       document.querySelectorAll('.yr-btn').forEach(btn => {
         const y = +btn.dataset.years;
         btn.classList.toggle('active', y === selectedYears);
         btn.classList.toggle('best',   y === bestYears);
       });
     }
-
-    document.querySelectorAll('.yr-btn').forEach(btn =>
-      btn.addEventListener('click', () => { setYears(+btn.dataset.years); handleSimulate(); })
-    );
 
     // ─── Auto-select best period for chosen token ─────────────────────────────
     async function applyBestPeriod(coinId) {
@@ -746,11 +779,17 @@
       } catch { /* silently ignore — offline or seeding in progress */ }
     }
 
-    $('token').addEventListener('change', () => {
-      bestYears = null; // clear stale badge while new token loads
-      document.querySelectorAll('.yr-btn').forEach(b => b.classList.remove('best'));
-      applyBestPeriod($('token').value);
-    });
+    async function loadToken(coinId) {
+      bestYears = null;
+      const info = await fetchTokenInfo(coinId);
+      const periods = periodsFromDays(info ? info.total_days : 365 * 3);
+      const defaultYears = renderYearButtons(periods);
+      setYears(defaultYears);
+      await applyBestPeriod(coinId);
+      handleSimulate();
+    }
+
+    $('token').addEventListener('change', () => loadToken($('token').value));
 
     // ─── Interval preset buttons ──────────────────────────────────────────────
     document.querySelectorAll('.ipreset').forEach(btn => {
@@ -948,8 +987,7 @@
     });
 
     // ─── Init ─────────────────────────────────────────────────────────────────
-    setYears(3);
-    applyBestPeriod($('token').value).then(() => handleSimulate());
+    loadToken($('token').value);
   </script>
 </body>
 </html>

@@ -89,6 +89,20 @@ def prices(token: str):
     )
 
 
+PERIOD_CANDIDATES = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5]
+
+def available_periods(token: str, con) -> list[float]:
+    """Return candidate periods (in years) that fit within the token's data range."""
+    row = con.execute(
+        "SELECT MIN(date) first_date FROM price_records WHERE token=?", (token,)
+    ).fetchone()
+    if not row or not row["first_date"]:
+        return [1]
+    available_years = (date.today() - date.fromisoformat(row["first_date"])).days / 365
+    periods = [y for y in PERIOD_CANDIDATES if y <= available_years * 0.95]
+    return periods or [round(available_years, 2)]
+
+
 @app.get("/api/tokens")
 @limiter.limit("60 per minute")
 def tokens():
@@ -100,20 +114,38 @@ def tokens():
     return jsonify(tokens=[r["token"] for r in rows])
 
 
+@app.get("/api/token-info/<token>")
+@limiter.limit("60 per minute")
+def token_info(token: str):
+    con = get_db()
+    row = con.execute(
+        "SELECT MIN(date) first_date, MAX(date) last_date, COUNT(*) total_days "
+        "FROM price_records WHERE token=?",
+        (token,),
+    ).fetchone()
+    con.close()
+    if not row or not row["first_date"]:
+        return jsonify(error=f'No data for "{token}"'), 404
+    return jsonify(
+        token=token,
+        first_date=row["first_date"],
+        last_date=row["last_date"],
+        total_days=row["total_days"],
+    )
+
+
 @app.get("/api/best-period/<token>")
 @limiter.limit("20 per minute")
 def best_period(token: str):
-    """
-    For each of [2, 3, 4, 5] years, simulate weekly $100 DCA and return
-    the number of years that produces the highest P&L%.
-    """
     today = date.today()
     con = get_db()
     best_yrs = None
     best_pnl = None
 
-    for years in [2, 3, 4, 5]:
-        from_date = (today - timedelta(days=years * 365)).isoformat()
+    periods = available_periods(token, con)
+
+    for years in periods:
+        from_date = (today - timedelta(days=int(years * 365))).isoformat()
         to_date = today.isoformat()
 
         rows = con.execute(
@@ -123,20 +155,18 @@ def best_period(token: str):
         ).fetchall()
 
         if len(rows) < 30:
-            continue  # not enough data for this period
+            continue
 
         price_map = {r["date"]: r["price_usd"] for r in rows}
 
-        # Simulate weekly $100 DCA
         total_invested = 0.0
-        total_tokens = 0.0
+        total_tokens   = 0.0
         cursor = date.fromisoformat(from_date)
         end_dt = date.fromisoformat(to_date)
 
         while cursor <= end_dt:
-            ds = cursor.isoformat()
+            ds    = cursor.isoformat()
             price = price_map.get(ds)
-            # Search ±3 days if exact date missing
             if price is None:
                 for delta in range(1, 4):
                     p = price_map.get((cursor + timedelta(days=delta)).isoformat()) or \
@@ -145,7 +175,7 @@ def best_period(token: str):
                         price = p
                         break
             if price:
-                total_tokens += 100.0 / price
+                total_tokens   += 100.0 / price
                 total_invested += 100.0
             cursor += timedelta(days=7)
 
@@ -162,7 +192,7 @@ def best_period(token: str):
     con.close()
 
     if best_yrs is None:
-        best_yrs = 2  # fallback — not enough data for any period
+        best_yrs = periods[0]
 
     return jsonify(best_years=best_yrs, best_pnl_pct=round(best_pnl or 0, 1))
 
