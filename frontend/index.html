@@ -144,6 +144,23 @@
       font-family: 'Lora', serif;
     }
 
+    .sim-cta {
+      display: inline-block;
+      margin-top: 1.6rem;
+      padding: 0.65rem 1.6rem;
+      background: var(--forest);
+      color: #fff;
+      border-radius: 10px;
+      font-family: 'Klee One', serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: background 0.18s, transform 0.1s;
+      letter-spacing: 0.01em;
+    }
+    .sim-cta:hover { background: var(--deep-forest); }
+    .sim-cta:active { transform: scale(0.97); }
+
     .back {
       margin-top: 3rem;
       font-family: 'Lora', serif;
@@ -203,6 +220,8 @@
       Non-custodial DCA platform for EVM chains. Set an amount, pick an interval —
       your tokens land directly in your wallet. No custody. No compromise.
     </p>
+
+    <a href="simulate.html" class="sim-cta">Try the Simulator →</a>
 
     <div class="tags">
       <span class="tag">DeFi</span>

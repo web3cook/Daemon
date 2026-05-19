@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SIP Simulator — See how your DCA plan would have grown</title>
+  <meta name="description" content="Simulate how a systematic investment plan would have performed on any crypto asset. No wallet required." />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&family=Lora:ital,wght@0,400;0,500;1,400&family=Caveat:wght@500;600&display=swap"
+    rel="stylesheet"
+  />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --cream:        #FFF8F0;
+      --forest:       #4A7C59;
+      --deep-forest:  #2D5016;
+      --coal:         #2C3E2D;
+      --mist:         #C8DFC8;
+      --rose:         #D4896A;
+      --parchment:    #F0E8D8;
+      --parchment-dk: #E8D8C0;
+      --card-bg:      rgba(255, 248, 240, 0.92);
+      --border:       rgba(200, 223, 200, 0.45);
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--cream);
+      font-family: 'Lora', Georgia, serif;
+      color: var(--coal);
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 55% 45% at 10% 15%, rgba(212,137,106,0.10) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 55% at 90% 85%, rgba(200,223,200,0.22) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Nav ── */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 2rem;
+      background: rgba(255, 248, 240, 0.88);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-brand {
+      font-family: 'Caveat', cursive;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--forest);
+      text-decoration: none;
+    }
+    .nav-back {
+      font-family: 'Lora', serif;
+      font-size: 0.82rem;
+      color: rgba(44,62,45,0.5);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      transition: color 0.2s;
+    }
+    .nav-back:hover { color: var(--forest); }
+
+    /* ── Page ── */
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem 5rem;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      margin-bottom: 2.5rem;
+    }
+    .hero-eyebrow {
+      font-family: 'Caveat', cursive;
+      font-size: 1.05rem;
+      color: var(--rose);
+      margin-bottom: 0.35rem;
+    }
+    .hero h1 {
+      font-family: 'Klee One', Georgia, serif;
+      font-size: clamp(1.55rem, 3.5vw, 2.2rem);
+      font-weight: 600;
+      color: var(--coal);
+      line-height: 1.2;
+    }
+    .hero p {
+      margin-top: 0.5rem;
+      font-size: 0.92rem;
+      color: rgba(44,62,45,0.58);
+      max-width: 500px;
+      line-height: 1.65;
+    }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 272px 1fr;
+      gap: 1.75rem;
+      align-items: start;
+    }
+    @media (max-width: 780px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── Form panel ── */
+    .form-panel {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.4rem 1.3rem;
+      position: sticky;
+      top: 62px;
+    }
+    .form-panel-title {
+      font-family: 'Klee One', serif;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--deep-forest);
+      margin-bottom: 1.2rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .fg { margin-bottom: 1rem; }
+    .fg label {
+      display: block;
+      font-size: 0.7rem;
+      font-weight: 500;
+      color: rgba(44,62,45,0.52);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 0.32rem;
+    }
+    .fg select,
+    .fg input[type="number"],
+    .fg input[type="date"] {
+      width: 100%;
+      background: var(--cream);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 0.5rem 0.7rem;
+      font-family: 'Lora', serif;
+      font-size: 0.88rem;
+      color: var(--coal);
+      outline: none;
+      transition: border-color 0.18s, box-shadow 0.18s;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .fg select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%234A7C59' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.7rem center;
+      padding-right: 2rem;
+      cursor: pointer;
+    }
+    .fg select:focus,
+    .fg input:focus {
+      border-color: var(--forest);
+      box-shadow: 0 0 0 3px rgba(74,124,89,0.12);
+    }
+
+    /* Interval */
+    .interval-presets {
+      display: flex;
+      gap: 0.3rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+    .ipreset {
+      font-family: 'Lora', serif;
+      font-size: 0.72rem;
+      padding: 0.28rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--cream);
+      color: rgba(44,62,45,0.6);
+      cursor: pointer;
+      transition: all 0.14s;
+      line-height: 1;
+    }
+    .ipreset:hover { border-color: var(--forest); color: var(--forest); }
+    .ipreset.active { background: var(--forest); color: #fff; border-color: var(--forest); }
+    .interval-row {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .interval-row input { flex: 1; }
+    .interval-row span {
+      font-size: 0.78rem;
+      color: rgba(44,62,45,0.45);
+      white-space: nowrap;
+    }
+
+    /* Year circle buttons */
+    .year-btns {
+      display: flex;
+      justify-content: space-between;
+      padding-bottom: 1.4rem; /* space for best badge */
+    }
+    .yr-btn {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1.5px solid var(--border);
+      background: var(--cream);
+      color: rgba(44,62,45,0.5);
+      font-family: 'Klee One', serif;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s, box-shadow 0.15s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      line-height: 1;
+      user-select: none;
+    }
+    .yr-btn:hover {
+      border-color: var(--forest);
+      color: var(--forest);
+      transform: scale(1.05);
+    }
+    .yr-btn.active {
+      background: var(--forest);
+      border-color: var(--forest);
+      color: #fff;
+      box-shadow: 0 3px 10px rgba(74,124,89,0.30);
+      transform: scale(1.08);
+    }
+    .best-badge {
+      font-family: 'Caveat', cursive;
+      font-size: 0.6rem;
+      color: var(--rose);
+      position: absolute;
+      bottom: -1.15rem;
+      left: 50%;
+      transform: translateX(-50%);
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .yr-btn.best .best-badge { opacity: 1; }
+
+    /* Simulate button */
+    .btn-simulate {
+      width: 100%;
+      margin-top: 1.3rem;
+      padding: 0.68rem 1rem;
+      background: var(--forest);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-family: 'Klee One', serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.18s, transform 0.1s;
+      letter-spacing: 0.01em;
+    }
+    .btn-simulate:hover:not(:disabled) { background: var(--deep-forest); }
+    .btn-simulate:active:not(:disabled) { transform: scale(0.98); }
+    .btn-simulate:disabled { background: var(--mist); color: rgba(44,62,45,0.4); cursor: not-allowed; }
+
+    /* ── Results ── */
+    .results {
+      display: flex;
+      flex-direction: column;
+      gap: 1.4rem;
+    }
+
+    /* Empty state */
+    .empty-state {
+      background: var(--card-bg);
+      border: 1.5px dashed var(--border);
+      border-radius: 18px;
+      padding: 4.5rem 2rem;
+      text-align: center;
+    }
+    .empty-icon {
+      width: 56px;
+      height: 40px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 5px;
+      margin: 0 auto 1.2rem;
+    }
+    .empty-bar {
+      width: 10px;
+      border-radius: 3px 3px 0 0;
+      opacity: 0.25;
+    }
+    .empty-bar:nth-child(1) { height: 16px; background: var(--mist); }
+    .empty-bar:nth-child(2) { height: 24px; background: var(--rose); }
+    .empty-bar:nth-child(3) { height: 32px; background: var(--forest); }
+    .empty-bar:nth-child(4) { height: 40px; background: var(--deep-forest); }
+    .empty-state p {
+      font-size: 0.88rem;
+      color: rgba(44,62,45,0.42);
+      line-height: 1.6;
+    }
+    .empty-state strong { color: rgba(44,62,45,0.6); }
+
+    /* Loading */
+    .loading-state {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 4rem 2rem;
+      text-align: center;
+      display: none;
+    }
+    .spinner {
+      width: 34px;
+      height: 34px;
+      border: 2.5px solid var(--mist);
+      border-top-color: var(--forest);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-state p { font-size: 0.84rem; color: rgba(44,62,45,0.42); }
+
+    /* Error */
+    .error-banner {
+      background: rgba(212,137,106,0.1);
+      border: 1px solid rgba(212,137,106,0.35);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      font-size: 0.84rem;
+      color: #b05e3a;
+      line-height: 1.5;
+      display: none;
+    }
+
+    /* Chart card */
+    .chart-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.4rem 1.5rem 1.2rem;
+      display: none;
+    }
+    .chart-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .chart-title {
+      font-family: 'Klee One', serif;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--deep-forest);
+    }
+    .chart-legend {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.7rem;
+      color: rgba(44,62,45,0.55);
+    }
+    .legend-line {
+      width: 18px;
+      height: 2px;
+      border-radius: 2px;
+    }
+    .legend-line.dashed {
+      background: repeating-linear-gradient(
+        to right,
+        #8BAD8B 0px, #8BAD8B 4px,
+        transparent 4px, transparent 7px
+      );
+    }
+    .chart-wrap {
+      position: relative;
+      height: 280px;
+    }
+
+    /* Summary grid */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.7rem;
+      display: none;
+    }
+    @media (max-width: 600px) {
+      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .sc {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      padding: 0.95rem 1rem;
+    }
+    .sc-label {
+      font-size: 0.66rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: rgba(44,62,45,0.45);
+      margin-bottom: 0.28rem;
+    }
+    .sc-value {
+      font-family: 'Klee One', serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--coal);
+      line-height: 1.1;
+    }
+    .sc-value.pos { color: var(--forest); }
+    .sc-value.neg { color: var(--rose); }
+    .sc-sub {
+      font-size: 0.72rem;
+      color: rgba(44,62,45,0.4);
+      margin-top: 0.12rem;
+    }
+
+    /* CTA card */
+    .cta-card {
+      background: var(--parchment);
+      border: 1px solid var(--parchment-dk);
+      border-radius: 18px;
+      padding: 1.3rem 1.5rem;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .cta-text .cta-heading {
+      font-family: 'Klee One', serif;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--deep-forest);
+    }
+    .cta-text p {
+      font-size: 0.78rem;
+      color: rgba(44,62,45,0.52);
+      margin-top: 0.2rem;
+      line-height: 1.5;
+    }
+    /* WALLET_HOOK: remove disabled + adjust opacity when wallet connect is wired up */
+    .btn-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.62rem 1.25rem;
+      background: var(--deep-forest);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-family: 'Klee One', serif;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: not-allowed;
+      opacity: 0.55;
+      white-space: nowrap;
+    }
+    .cta-badge {
+      font-family: 'Caveat', cursive;
+      font-size: 0.72rem;
+      background: var(--rose);
+      color: #fff;
+      padding: 0.05rem 0.4rem;
+      border-radius: 4px;
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="nav">
+    <a href="index.html" class="nav-brand">SIP</a>
+    <a href="index.html" class="nav-back">← Home</a>
+  </nav>
+
+  <div class="page">
+    <div class="hero">
+      <div class="hero-eyebrow">Simulation Calculator</div>
+      <h1>See how your DCA plan would have grown</h1>
+      <p>Pick a token, set your amount and frequency, and replay what a systematic investment plan would have returned — historically. No wallet required.</p>
+    </div>
+
+    <div class="layout">
+
+      <!-- ── Form panel ── -->
+      <aside class="form-panel">
+        <div class="form-panel-title">Configure SIP</div>
+
+        <div class="fg">
+          <label for="token">Asset to buy</label>
+          <select id="token">
+            <option value="bitcoin" selected>Bitcoin (BTC)</option>
+            <option value="ethereum">Ethereum (ETH)</option>
+            <option value="binance-coin">BNB</option>
+            <option value="solana">Solana (SOL)</option>
+            <option value="hyperliquid">Hyperliquid (HYPE)</option>
+          </select>
+        </div>
+
+        <div class="fg">
+          <label for="amount">Amount per cycle (USD)</label>
+          <input type="number" id="amount" value="100" min="1" step="10" />
+        </div>
+
+        <div class="fg">
+          <label>Frequency</label>
+          <div class="interval-presets">
+            <button class="ipreset" data-days="1">Daily</button>
+            <button class="ipreset active" data-days="7">Weekly</button>
+            <button class="ipreset" data-days="14">Bi-weekly</button>
+            <button class="ipreset" data-days="30">Monthly</button>
+          </div>
+          <div class="interval-row">
+            <input type="number" id="interval-days" value="7" min="1" max="365" />
+            <span>days per cycle</span>
+          </div>
+        </div>
+
+        <div class="fg">
+          <label>Investment Period</label>
+          <div class="year-btns">
+            <button class="yr-btn" data-years="2">2Y<span class="best-badge">best</span></button>
+            <button class="yr-btn active" data-years="3">3Y<span class="best-badge">best</span></button>
+            <button class="yr-btn" data-years="4">4Y<span class="best-badge">best</span></button>
+            <button class="yr-btn" data-years="5">5Y<span class="best-badge">best</span></button>
+          </div>
+        </div>
+
+        <button class="btn-simulate" id="btn-simulate">Simulate</button>
+      </aside>
+
+      <!-- ── Results ── -->
+      <div class="results">
+
+        <!-- Empty state -->
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">
+            <div class="empty-bar"></div>
+            <div class="empty-bar"></div>
+            <div class="empty-bar"></div>
+            <div class="empty-bar"></div>
+          </div>
+          <p>Set your SIP parameters and hit <strong>Simulate</strong><br>to see how your investment would have grown.</p>
+        </div>
+
+        <!-- Loading -->
+        <div class="loading-state" id="loading-state">
+          <div class="spinner"></div>
+          <p>Loading price history…</p>
+        </div>
+
+        <!-- Error -->
+        <div class="error-banner" id="error-banner"></div>
+
+        <!-- Chart -->
+        <div class="chart-card" id="chart-card">
+          <div class="chart-header">
+            <div class="chart-title">Portfolio value over time</div>
+            <div class="chart-legend">
+              <div class="legend-item">
+                <div class="legend-line" style="background:#4A7C59;"></div>DCA Portfolio
+              </div>
+              <div class="legend-item">
+                <div class="legend-line dashed"></div>Total Invested
+              </div>
+              <div class="legend-item">
+                <div class="legend-line" style="background:#D4896A;"></div>Lump Sum
+              </div>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="sim-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Summary cards -->
+        <div class="summary-grid" id="summary-grid">
+          <div class="sc">
+            <div class="sc-label">Total Invested</div>
+            <div class="sc-value" id="sc-invested">—</div>
+          </div>
+          <div class="sc">
+            <div class="sc-label">Portfolio Value</div>
+            <div class="sc-value" id="sc-value">—</div>
+          </div>
+          <div class="sc">
+            <div class="sc-label">P &amp; L</div>
+            <div class="sc-value" id="sc-pnl">—</div>
+            <div class="sc-sub" id="sc-pnl-pct"></div>
+          </div>
+          <div class="sc">
+            <div class="sc-label">Avg Buy Price</div>
+            <div class="sc-value" id="sc-avg-price">—</div>
+          </div>
+          <div class="sc">
+            <div class="sc-label">Executions</div>
+            <div class="sc-value" id="sc-executions">—</div>
+          </div>
+          <div class="sc">
+            <div class="sc-label">vs Lump Sum</div>
+            <div class="sc-value" id="sc-vs-lump">—</div>
+            <div class="sc-sub" id="sc-vs-lump-sub"></div>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <div class="cta-card" id="cta-card">
+          <div class="cta-text">
+            <div class="cta-heading">Ready to start this SIP?</div>
+            <p>Connect your wallet to set up this exact plan on-chain — fully non-custodial.</p>
+          </div>
+          <!--
+            WALLET_HOOK: to enable this button —
+            1. Remove `disabled` attribute and `opacity: 0.55` / `cursor: not-allowed`
+            2. Add click handler that reads data-token, data-amount, data-interval
+               and routes to the Create SIP flow with those params pre-filled
+          -->
+          <button
+            class="btn-cta"
+            disabled
+            data-action="create-sip"
+            data-token=""
+            data-amount=""
+            data-interval=""
+          >
+            Start this SIP
+            <span class="cta-badge">soon</span>
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ─── Constants ────────────────────────────────────────────────────────────
+    const BACKEND = 'http://13.127.32.103:3001';
+
+    // ─── Date helpers ─────────────────────────────────────────────────────────
+    const toDateStr = d => d.toISOString().split('T')[0];
+    const addDays   = (d, n) => { const r = new Date(d); r.setUTCDate(r.getUTCDate() + n); return r; };
+
+    function datesFromYears(years) {
+      const today = new Date();
+      const start = new Date(today);
+      start.setFullYear(today.getFullYear() - years);
+      return { startDate: toDateStr(start), endDate: toDateStr(today) };
+    }
+
+    // ─── Formatters ───────────────────────────────────────────────────────────
+    const fmtUSD = v =>
+      '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtCompact = v => {
+      if (v >= 1_000_000) return '$' + (v / 1_000_000).toFixed(2) + 'M';
+      if (v >= 1_000)     return '$' + (v / 1_000).toFixed(1) + 'K';
+      return fmtUSD(v);
+    };
+    const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+    const fmtPP  = v => (v >= 0 ? '+' : '') + v.toFixed(1) + 'pp';
+
+    // ─── State ────────────────────────────────────────────────────────────────
+    let chart = null;
+    let cache = null; // { coinId, from, to, prices }
+
+    // ─── UI helpers ───────────────────────────────────────────────────────────
+    const $        = id => document.getElementById(id);
+    const show     = id => $(id).style.display = 'block';
+    const hide     = id => $(id).style.display = 'none';
+    const showFlex = id => $(id).style.display = 'flex';
+    const showGrid = id => $(id).style.display = 'grid';
+
+    function setLoading(on) {
+      $('btn-simulate').disabled = on;
+      $('btn-simulate').textContent = on ? 'Simulating…' : 'Simulate';
+    }
+    function showError(msg) {
+      const el = $('error-banner');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+    function resetResults() {
+      hide('chart-card'); hide('loading-state'); hide('error-banner');
+      $('summary-grid').style.display = 'none';
+      $('cta-card').style.display     = 'none';
+    }
+
+    // ─── Year circle buttons ──────────────────────────────────────────────────
+    let selectedYears = 3;
+    let bestYears     = null; // persists across user clicks
+
+    function setYears(years, markBest = false) {
+      selectedYears = years;
+      if (markBest) bestYears = years; // only update when backend explicitly says so
+      document.querySelectorAll('.yr-btn').forEach(btn => {
+        const y = +btn.dataset.years;
+        btn.classList.toggle('active', y === selectedYears);
+        btn.classList.toggle('best',   y === bestYears);
+      });
+    }
+
+    document.querySelectorAll('.yr-btn').forEach(btn =>
+      btn.addEventListener('click', () => { setYears(+btn.dataset.years); handleSimulate(); })
+    );
+
+    // ─── Auto-select best period for chosen token ─────────────────────────────
+    async function applyBestPeriod(coinId) {
+      try {
+        const res  = await fetch(`${BACKEND}/api/best-period/${encodeURIComponent(coinId)}`);
+        if (!res.ok) return;
+        const { best_years } = await res.json();
+        setYears(best_years, true);
+      } catch { /* silently ignore — offline or seeding in progress */ }
+    }
+
+    $('token').addEventListener('change', () => {
+      bestYears = null; // clear stale badge while new token loads
+      document.querySelectorAll('.yr-btn').forEach(b => b.classList.remove('best'));
+      applyBestPeriod($('token').value);
+    });
+
+    // ─── Interval preset buttons ──────────────────────────────────────────────
+    document.querySelectorAll('.ipreset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.ipreset').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        $('interval-days').value = btn.dataset.days;
+      });
+    });
+    $('interval-days').addEventListener('input', () => {
+      const v = +$('interval-days').value;
+      document.querySelectorAll('.ipreset').forEach(b =>
+        b.classList.toggle('active', +b.dataset.days === v)
+      );
+    });
+
+    // ─── Fetch prices from local backend ──────────────────────────────────────
+    async function fetchPrices(coinId, fromDate, toDate) {
+      if (cache && cache.coinId === coinId && cache.from === fromDate && cache.to === toDate)
+        return cache.prices;
+      const url = `${BACKEND}/api/prices/${encodeURIComponent(coinId)}?from=${fromDate}&to=${toDate}`;
+      let res;
+      try { res = await fetch(url); }
+      catch { throw new Error('Cannot reach the price server. Is the backend running? (cd backend && python3 server.py)'); }
+      if (res.status === 404) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `No data found for "${coinId}" in this date range.`);
+      }
+      if (!res.ok) throw new Error(`Price server error (HTTP ${res.status}).`);
+      const json = await res.json();
+      if (!json.data?.length) throw new Error('No price data found for this date range.');
+      cache = { coinId, from: fromDate, to: toDate, prices: json.data };
+      return json.data;
+    }
+
+    // ─── Build date → price map ───────────────────────────────────────────────
+    function buildPriceMap(raw) {
+      const m = new Map();
+      for (const { date, priceUsd } of raw)
+        if (!m.has(date)) m.set(date, parseFloat(priceUsd));
+      return m;
+    }
+
+    function priceAt(map, dateStr) {
+      if (map.has(dateStr)) return map.get(dateStr);
+      const base = new Date(dateStr + 'T00:00:00Z').getTime();
+      for (let i = 1; i <= 3; i++) {
+        const f = toDateStr(new Date(base + i * 86400000));
+        const b = toDateStr(new Date(base - i * 86400000));
+        if (map.has(f)) return map.get(f);
+        if (map.has(b)) return map.get(b);
+      }
+      return null;
+    }
+
+    // ─── DCA simulation ───────────────────────────────────────────────────────
+    function simulate(priceMap, amountPerCycle, intervalDays, startDate, endDate) {
+      const execs = [];
+      let cursor = new Date(startDate + 'T00:00:00Z');
+      const end  = new Date(endDate   + 'T00:00:00Z');
+      while (cursor <= end) {
+        const p = priceAt(priceMap, toDateStr(cursor));
+        if (p !== null) execs.push({ date: toDateStr(cursor), price: p });
+        cursor = addDays(cursor, intervalDays);
+      }
+      if (!execs.length) throw new Error('No price data found for this range.');
+
+      let totalInvested = 0, totalTokens = 0;
+      const dcaSeries = execs.map(e => {
+        totalTokens   += amountPerCycle / e.price;
+        totalInvested += amountPerCycle;
+        return { date: e.date, invested: totalInvested, portfolioValue: totalTokens * e.price };
+      });
+
+      const lumpAmount = amountPerCycle * execs.length;
+      const lumpTokens = lumpAmount / execs[0].price;
+      const lumpSeries = execs.map(e => ({ date: e.date, value: lumpTokens * e.price }));
+
+      const latestPrice      = execs[execs.length - 1].price;
+      const currentDCAValue  = totalTokens * latestPrice;
+      const currentLumpValue = lumpTokens  * latestPrice;
+      const avgBuyPrice      = totalInvested / totalTokens;
+      const pnl              = currentDCAValue - totalInvested;
+      const pnlPct           = (pnl / totalInvested) * 100;
+      const lumpPnlPct       = ((currentLumpValue - lumpAmount) / lumpAmount) * 100;
+
+      return {
+        dcaSeries, lumpSeries,
+        totalInvested, currentDCAValue, currentLumpValue,
+        avgBuyPrice, pnl, pnlPct, lumpPnlPct,
+        vsDiff: pnlPct - lumpPnlPct,
+        executionCount: execs.length,
+      };
+    }
+
+    // ─── Render chart ─────────────────────────────────────────────────────────
+    function renderChart(r) {
+      if (chart) { chart.destroy(); chart = null; }
+      chart = new Chart($('sim-chart').getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: r.dcaSeries.map(d => d.date),
+          datasets: [
+            { label: 'DCA Portfolio',  data: r.dcaSeries.map(d => +d.portfolioValue.toFixed(2)), borderColor: '#4A7C59', backgroundColor: 'rgba(74,124,89,0.07)', borderWidth: 2, fill: true,  tension: 0.35, pointRadius: 0 },
+            { label: 'Total Invested', data: r.dcaSeries.map(d => +d.invested.toFixed(2)),        borderColor: '#8BAD8B', borderDash: [5,4], borderWidth: 1.5, fill: false, tension: 0,    pointRadius: 0 },
+            { label: 'Lump Sum',       data: r.lumpSeries.map(d => +d.value.toFixed(2)),          borderColor: '#D4896A', borderWidth: 2, fill: false, tension: 0.35, pointRadius: 0 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'rgba(255,248,240,0.96)', borderColor: 'rgba(200,223,200,0.5)', borderWidth: 1,
+              titleColor: '#2C3E2D', bodyColor: '#2C3E2D', padding: 10,
+              titleFont: { family: 'Lora, serif', size: 11 }, bodyFont: { family: 'Lora, serif', size: 11 },
+              callbacks: { label: c => `  ${c.dataset.label}: ${fmtUSD(c.parsed.y)}` },
+            },
+          },
+          scales: {
+            x: { ticks: { font: { family: 'Lora, serif', size: 10 }, color: 'rgba(44,62,45,0.38)', maxTicksLimit: 7, maxRotation: 0 }, grid: { color: 'rgba(200,223,200,0.18)' } },
+            y: { ticks: { font: { family: 'Lora, serif', size: 10 }, color: 'rgba(44,62,45,0.38)', callback: v => fmtCompact(v) }, grid: { color: 'rgba(200,223,200,0.18)' } },
+          },
+        },
+      });
+    }
+
+    // ─── Render summary cards ─────────────────────────────────────────────────
+    function renderCards(r) {
+      $('sc-invested').textContent   = fmtCompact(r.totalInvested);
+      $('sc-value').textContent      = fmtCompact(r.currentDCAValue);
+      $('sc-avg-price').textContent  = fmtCompact(r.avgBuyPrice);
+      $('sc-executions').textContent = r.executionCount;
+
+      const pnlEl = $('sc-pnl');
+      pnlEl.textContent = (r.pnl >= 0 ? '+' : '-') + fmtCompact(Math.abs(r.pnl));
+      pnlEl.className   = 'sc-value ' + (r.pnl >= 0 ? 'pos' : 'neg');
+      $('sc-pnl-pct').textContent = fmtPct(r.pnlPct);
+
+      const vsEl = $('sc-vs-lump');
+      vsEl.textContent = fmtPP(r.vsDiff);
+      vsEl.className   = 'sc-value ' + (r.vsDiff >= 0 ? 'pos' : 'neg');
+      $('sc-vs-lump-sub').textContent = r.vsDiff >= 0 ? 'DCA outperformed' : 'Lump sum outperformed';
+    }
+
+    // ─── Main simulate handler ────────────────────────────────────────────────
+    async function handleSimulate() {
+      const coinId       = $('token').value;
+      const amount       = parseFloat($('amount').value);
+      const intervalDays = parseInt($('interval-days').value);
+      const years        = selectedYears;
+
+      if (!amount || amount <= 0)            return showError('Please enter a valid amount per cycle.');
+      if (!intervalDays || intervalDays < 1) return showError('Interval must be at least 1 day.');
+
+      const { startDate, endDate } = datesFromYears(years);
+
+      hide('empty-state');
+      resetResults();
+      show('loading-state');
+      setLoading(true);
+
+      try {
+        const raw      = await fetchPrices(coinId, startDate, endDate);
+        const priceMap = buildPriceMap(raw);
+        hide('loading-state');
+
+        const result = simulate(priceMap, amount, intervalDays, startDate, endDate);
+        renderChart(result);
+        renderCards(result);
+
+        // Wire CTA for future wallet integration
+        const cta = document.querySelector('[data-action="create-sip"]');
+        cta.dataset.token    = coinId;
+        cta.dataset.amount   = amount;
+        cta.dataset.interval = intervalDays;
+        cta.dataset.years    = years;
+
+        show('chart-card');
+        showGrid('summary-grid');
+        showFlex('cta-card');
+      } catch (err) {
+        hide('loading-state');
+        showError(err.message || 'Something went wrong. Please try again.');
+        show('empty-state');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    $('btn-simulate').addEventListener('click', handleSimulate);
+    document.querySelector('.form-panel').addEventListener('keydown', e => {
+      if (e.key === 'Enter') handleSimulate();
+    });
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+    setYears(3);
+    applyBestPeriod($('token').value).then(() => handleSimulate());
+  </script>
+</body>
+</html>
