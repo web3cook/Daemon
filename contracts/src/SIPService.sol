@@ -22,21 +22,24 @@ contract SIPService is IService, Ownable, ReentrancyGuard, Pausable {
     address public aggregator;
     address public treasury;
     uint256 public fee;
+    uint256 public maxFeeAmount;
     mapping(address => bool) public outputTokens;
 
     event FeeUpdated(uint256 indexed old, uint256 indexed newFee);
-    event AggregatorUpdated(address indexed oldAggregator,address indexed newAggregator);
+    event MaxFeeAmountUpdated(uint256 indexed old, uint256 indexed newMax);
+    event AggregatorUpdated(address indexed oldAggregator, address indexed newAggregator);
     event TokenAdded(address indexed token);
     event TokenRemoved(address indexed token);
     event SwapExecuted(address indexed subscriber, address indexed spendToken, address indexed outputToken, uint256 amountSpent, uint256 amountReceived, uint256 fee);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
-    
+    event Swept(address indexed token, address indexed to, uint256 amount);
 
     error ZeroAddress();
     error ZeroAmount();
     error NotSubscriptions();
     error SlippageExceeded(uint256 received, uint256 minimum);
     error TokenNotWhitelisted(address token);
+    error TokenAlreadyWhitelisted(address token);
     error SwapFailed();
     error FeeTooHigh(uint256 given, uint256 max);
 
@@ -49,17 +52,22 @@ contract SIPService is IService, Ownable, ReentrancyGuard, Pausable {
         if (_subscriptions == address(0)) revert ZeroAddress();
         if (_treasury == address(0)) revert ZeroAddress();
         if (_aggregator == address(0)) revert ZeroAddress();
-        
+
         subscriptions = _subscriptions;
-        treasury = _treasury;
-        MAX_FEE  = _maxFee;
-        aggregator = _aggregator;
+        treasury      = _treasury;
+        MAX_FEE       = _maxFee;
+        aggregator    = _aggregator;
     }
 
     function setFee(uint256 _newFee) external onlyOwner {
         if (_newFee > MAX_FEE) revert FeeTooHigh(_newFee, MAX_FEE);
         emit FeeUpdated(fee, _newFee);
         fee = _newFee;
+    }
+
+    function setMaxFeeAmount(uint256 _maxFeeAmount) external onlyOwner {
+        emit MaxFeeAmountUpdated(maxFeeAmount, _maxFeeAmount);
+        maxFeeAmount = _maxFeeAmount;
     }
 
     function setAggregator(address _newAggregator) external onlyOwner {
@@ -70,11 +78,13 @@ contract SIPService is IService, Ownable, ReentrancyGuard, Pausable {
 
     function addToken(address _token) external onlyOwner {
         if (_token == address(0)) revert ZeroAddress();
+        if (outputTokens[_token]) revert TokenAlreadyWhitelisted(_token);
         outputTokens[_token] = true;
         emit TokenAdded(_token);
     }
 
     function removeToken(address _token) external onlyOwner {
+        if (!outputTokens[_token]) revert TokenNotWhitelisted(_token);
         outputTokens[_token] = false;
         emit TokenRemoved(_token);
     }
@@ -85,7 +95,15 @@ contract SIPService is IService, Ownable, ReentrancyGuard, Pausable {
         treasury = _newTreasury;
     }
 
-    function pause() external onlyOwner { _pause(); }
+    function sweep(address _token, address _to) external onlyOwner nonReentrant {
+        if (_to == address(0)) revert ZeroAddress();
+        uint256 balance = IERC20(_token).balanceOf(address(this));
+        if (balance == 0) revert ZeroAmount();
+        IERC20(_token).safeTransfer(_to, balance);
+        emit Swept(_token, _to, balance);
+    }
+
+    function pause()   external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
     function execute(
@@ -98,8 +116,12 @@ contract SIPService is IService, Ownable, ReentrancyGuard, Pausable {
 
         SwapParams memory p = abi.decode(params, (SwapParams));
         if (!outputTokens[p.outputToken]) revert TokenNotWhitelisted(p.outputToken);
+        if (p.minOutputAmount == 0) revert ZeroAmount();
 
-        uint256 feeAmount  = amount * fee / 10_000;
+        uint256 feeAmount = amount * fee / 10_000;
+        if (maxFeeAmount > 0 && feeAmount > maxFeeAmount) {
+            feeAmount = maxFeeAmount;
+        }
         uint256 swapAmount = amount - feeAmount;
         if (feeAmount > 0) {
             IERC20(spendToken).safeTransfer(treasury, feeAmount);
