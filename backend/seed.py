@@ -32,6 +32,7 @@ TOKENS = [
     ("binance-coin", "2020-01-01"),
     ("solana", "2020-01-01"),
     ("hyperliquid", "2024-11-01"),  # HYPE launched Nov 2024
+    ("zcash", "2020-01-01"),
 ]
 
 
