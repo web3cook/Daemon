@@ -32,7 +32,8 @@ contract DeployTestnet is Script {
         console.log("TestAggregator:", address(aggregator));
 
         // --- core contracts ---
-        Subscriptions subs = new Subscriptions(PERMIT2, deployer);
+        // Permit2 is a hardcoded constant inside Subscriptions; only the executor is passed in.
+        Subscriptions subs = new Subscriptions(deployer);
         SIPService    sip  = new SIPService(address(subs), deployer, MAX_FEE, address(aggregator));
         console.log("Subscriptions:", address(subs));
         console.log("SIPService:   ", address(sip));

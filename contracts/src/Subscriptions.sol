@@ -12,15 +12,13 @@ import {IPermit2}        from "./interfaces/IPermit2.sol";
 
 struct Subscription {
     address subscriber;
-    uint48  permitExpiry;
-    bool    active;
     address service;
     address spendToken;
     uint256 amountPerCycle;
     uint256 interval;
-    uint256 nextExecutionAt;
-    uint256 maxExecutions;
-    uint256 executionsCount;
+    uint256 lastExecutionTime;
+    uint256 subscriptionStartTime;
+    uint256 permitExpiry;
 }
 
 error NotExecutor();
@@ -32,8 +30,8 @@ error PermitSpenderMismatch(address expected, address given);
 error PermitTokenMismatch(address expected, address given);
 error SubscriptionNotActive(bytes32 id);
 error NotSubscriber(bytes32 id);
-error TooEarly(uint256 currentTime, uint256 nextExecutionAt);
-error MaxExecutionsReached(bytes32 id);
+error TooEarly(bytes32 id, uint256 blockTimeStamp);
+error InsufficientSubscriptionAmount(bytes32 id, uint256 balance, uint256 balanceRequired);
 error ZeroAmount();
 error ZeroInterval();
 error ZeroAddress();
@@ -45,7 +43,6 @@ event SubscriptionCreated(
     address spendToken,
     uint256 amountPerCycle,
     uint256 interval,
-    uint256 maxExecutions,
     uint48  permitExpiry
 );
 event SubscriptionCancelled(
@@ -55,9 +52,9 @@ event SubscriptionCancelled(
 event Executed(
     bytes32 indexed id,
     address indexed subscriber,
-    uint256 amountSpent,
-    uint256 executionsCount,
-    uint256 nextExecutionAt
+    address indexed service,
+    uint256 amount,
+    uint256 executedAt
 );
 event ExecutorSet(address indexed executor, bool enabled);
 event ServiceRegistered(address indexed service);
@@ -65,8 +62,7 @@ event ServiceRemoved(address indexed service);
 
 contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
-
-    IPermit2 public immutable permit2;
+    IPermit2 public constant permit2 = IPermit2(0x000000000022D473030F116dDEE9F6B43aC78BA3);
 
     mapping(address => bool)         public executors;
     mapping(address => bool)         public services;
@@ -78,13 +74,9 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
         _;
     }
 
-    constructor(address _permit2, address _executor) Ownable(msg.sender) {
-        if (_permit2  == address(0)) revert ZeroAddress();
+    constructor(address _executor) Ownable(msg.sender) {
         if (_executor == address(0)) revert ZeroAddress();
-
-        permit2              = IPermit2(_permit2);
         executors[_executor] = true;
-
         emit ExecutorSet(_executor, true);
     }
 
@@ -93,7 +85,6 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
         address                       spendToken,
         uint256                       amountPerCycle,
         uint256                       interval,
-        uint256                       maxExecutions,
         IPermit2.PermitSingle calldata permitSingle,
         bytes                 calldata signature
     ) external whenNotPaused {
@@ -103,14 +94,10 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
         if (interval == 0) revert ZeroInterval();
         if (permitSingle.details.token != spendToken) revert PermitTokenMismatch(spendToken, permitSingle.details.token);
         if (permitSingle.spender != address(this)) revert PermitSpenderMismatch(address(this), permitSingle.spender);
-        if (maxExecutions == 0) {
-            if (permitSingle.details.amount != type(uint160).max)
-              revert PermitAmountTooLow(permitSingle.details.amount, uint256(type(uint160).max));
-        } else {
-            if (uint256(permitSingle.details.amount) < amountPerCycle * maxExecutions)
-              revert PermitAmountTooLow(permitSingle.details.amount, amountPerCycle * maxExecutions);
-        }
         if (permitSingle.details.expiration <= block.timestamp) revert PermitExpired(permitSingle.details.expiration);
+        uint256 executionCount = (permitSingle.details.expiration - block.timestamp)/interval;
+        if (uint256(permitSingle.details.amount) < amountPerCycle * executionCount)
+            revert PermitAmountTooLow(permitSingle.details.amount, amountPerCycle * executionCount);
 
         bytes32 id = keccak256(abi.encode(
             msg.sender,
@@ -121,15 +108,13 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
 
         subscriptions[id] = Subscription({
             subscriber:      msg.sender,
-            permitExpiry:    permitSingle.details.expiration,
-            active:          true,
             service:         service,
             spendToken:      spendToken,
             amountPerCycle:  amountPerCycle,
             interval:        interval,
-            nextExecutionAt: block.timestamp,
-            maxExecutions:   maxExecutions,
-            executionsCount: 0
+            lastExecutionTime: block.timestamp,
+            subscriptionStartTime: block.timestamp,
+            permitExpiry: uint256(permitSingle.details.expiration)
         });
 
         permit2.permit(msg.sender, permitSingle, signature);
@@ -141,7 +126,6 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
             spendToken,
             amountPerCycle,
             interval,
-            maxExecutions,
             permitSingle.details.expiration
         );
     }
@@ -149,9 +133,9 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
     function cancel(bytes32 id) external {
         Subscription storage sub = subscriptions[id];
         if (sub.subscriber != msg.sender) revert NotSubscriber(id);
-        if (!sub.active)                  revert SubscriptionNotActive(id);
+        if (sub.permitExpiry<block.timestamp) revert SubscriptionNotActive(id);
 
-        sub.active = false;
+        sub.permitExpiry = block.timestamp;
 
         emit SubscriptionCancelled(id, msg.sender);
     }
@@ -165,17 +149,11 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
         Subscription storage sub = subscriptions[id];
 
         if (!services[sub.service]) revert ServiceNotRegistered(sub.service);
-        if (!sub.active) revert SubscriptionNotActive(id);
-        if (block.timestamp < sub.nextExecutionAt) revert TooEarly(block.timestamp, sub.nextExecutionAt);
-        if (block.timestamp > sub.permitExpiry) revert PermitExpired(sub.permitExpiry);
-        if (sub.maxExecutions != 0 && sub.executionsCount >= sub.maxExecutions) revert MaxExecutionsReached(id);
-
-        sub.executionsCount++;
-        sub.nextExecutionAt = block.timestamp + sub.interval;
-
-        if (sub.maxExecutions != 0 && sub.executionsCount >= sub.maxExecutions) {
-            sub.active = false;
-        }
+        if (sub.permitExpiry < block.timestamp) revert SubscriptionNotActive(id);
+        if (sub.lastExecutionTime + sub.interval > block.timestamp) revert TooEarly(id, block.timestamp);
+        uint256 balanceUser = IERC20(sub.spendToken).balanceOf(sub.subscriber);
+        if(balanceUser<sub.amountPerCycle) revert InsufficientSubscriptionAmount(id, balanceUser,sub.amountPerCycle);
+        sub.lastExecutionTime = block.timestamp;
 
         permit2.transferFrom(
             sub.subscriber,
@@ -194,9 +172,9 @@ contract Subscriptions is Ownable, ReentrancyGuard, Pausable {
         emit Executed(
             id,
             sub.subscriber,
+            sub.service,
             sub.amountPerCycle,
-            sub.executionsCount,
-            sub.nextExecutionAt
+            block.timestamp
         );
     }
 

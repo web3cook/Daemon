@@ -21,9 +21,9 @@ contract Subscribe is Script {
         "PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)"
     );
 
-    uint256 constant SPEND_AMOUNT   = 10e6;       // 10 mUSDC per cycle
-    uint256 constant INTERVAL       = 5 minutes;
-    uint256 constant MAX_EXECUTIONS = 5;
+    uint256 constant SPEND_AMOUNT = 10e6;       // 10 mUSDC per cycle
+    uint256 constant INTERVAL     = 5 minutes;
+    uint48  constant EXPIRY_AFTER = 7 days;      // subscription window length
 
     function run() external {
         string memory json = vm.readFile("./deployments/arbitrum-sepolia.json");
@@ -44,8 +44,13 @@ contract Subscribe is Script {
         Subscriptions subs = Subscriptions(subscriptions);
         TestERC20 usdc    = TestERC20(mockUSDC);
 
-        // mint enough mUSDC for all cycles
-        uint256 totalNeeded = SPEND_AMOUNT * MAX_EXECUTIONS;
+        // Subscriptions derives the max executions from (expiry - now) / interval and
+        // requires the permit amount to cover amountPerCycle * that count.
+        uint48  expiration     = uint48(block.timestamp + EXPIRY_AFTER);
+        uint256 executionCount = (uint256(expiration) - block.timestamp) / INTERVAL;
+        uint256 totalNeeded    = SPEND_AMOUNT * executionCount;
+        uint160 permitAmount   = uint160(totalNeeded);
+
         vm.startBroadcast(subscriberKey);
         usdc.mint(subscriber, totalNeeded);
 
@@ -54,10 +59,6 @@ contract Subscribe is Script {
 
         // read current nonce from Permit2
         (, , uint48 permit2Nonce) = p2.allowance(subscriber, mockUSDC, subscriptions);
-
-        // build PermitSingle
-        uint48 expiration   = uint48(block.timestamp + 7 days);
-        uint160 permitAmount = uint160(totalNeeded);
 
         IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
@@ -95,7 +96,6 @@ contract Subscribe is Script {
             mockUSDC,
             SPEND_AMOUNT,
             INTERVAL,
-            MAX_EXECUTIONS,
             permitSingle,
             sig
         );
