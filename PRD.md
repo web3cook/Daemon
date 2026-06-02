@@ -104,7 +104,7 @@ This is the core protocol contract. It is chain-agnostic and service-agnostic. A
 #### Responsibilities
 - Store and manage subscription state for all users and all services.
 - Enforce that only the designated executor (the bot's address) can trigger an execution.
-- Enforce per-subscription constraints: token, amount, interval, max executions, expiry.
+- Enforce per-subscription constraints: token, amount, interval, expiry. (Max executions is not stored — it is implied by `(permitExpiry - subscriptionStartTime) / interval`.)
 - Allow users to cancel subscriptions at any time.
 - Emit events for all state changes so the backend can index them.
 
@@ -112,45 +112,53 @@ This is the core protocol contract. It is chain-agnostic and service-agnostic. A
 
 ```
 Subscription {
-  id:               bytes32          // unique identifier
-  subscriber:       address          // user's wallet
-  service:          address          // address of the Service contract
-  spendToken:       address          // token user is spending (e.g. USDC)
-  amountPerCycle:   uint256          // amount to spend each execution
-  interval:         uint256          // seconds between executions
-  nextExecutionAt:  uint256          // unix timestamp of next valid execution
-  maxExecutions:    uint256          // 0 = unlimited
-  executionsCount:  uint256          // how many times executed so far
-  active:           bool
+  id:                    bytes32     // unique identifier (keccak of subscriber, service, token, nonce)
+  subscriber:            address     // user's wallet
+  service:               address     // address of the Service contract
+  spendToken:            address     // token user is spending (e.g. USDC)
+  amountPerCycle:        uint256     // amount to spend each execution
+  interval:              uint256     // seconds between executions
+  lastExecutionTime:     uint256     // unix timestamp of the last execution (set to start time at creation)
+  subscriptionStartTime: uint256     // unix timestamp the subscription was created
+  permitExpiry:          uint256     // Permit2 expiry; doubles as the cancellation marker
 }
 ```
+
+Notes on the model:
+- There is no `active` flag. A subscription is considered active while `block.timestamp <= permitExpiry`. **Cancellation** simply sets `permitExpiry = block.timestamp`, so the subscription expires immediately.
+- There is no `nextExecutionAt` field. The next valid execution is `lastExecutionTime + interval`. At creation `lastExecutionTime` is set to the start time, so the first execution happens one interval after subscribing.
+- There is no `maxExecutions`/`executionsCount`. The total number of executions is bounded implicitly by the permit window: `(permitExpiry - subscriptionStartTime) / interval`.
 
 #### Key Functions
 
 | Function | Who calls it | Description |
 |---|---|---|
-| `subscribe(service, spendToken, amount, interval, maxExecutions)` | User | Creates a new subscription. User must have separately approved the contract to spend `spendToken`. |
-| `cancel(subscriptionId)` | User | Cancels an active subscription immediately. |
-| `execute(subscriptionId)` | Bot (executor) | Validates timing and constraints, then calls `service.execute(subscription)`. |
-| `setExecutor(address)` | Owner | Updates the authorized executor address. |
+| `subscribe(service, spendToken, amount, interval, permitSingle, signature)` | User | Creates a new subscription. The user passes a signed Permit2 `PermitSingle`; the contract registers it via `permit2.permit(...)`. The permit `amount` must cover `amount * (permit window / interval)`. |
+| `cancel(subscriptionId)` | User | Cancels an active subscription immediately (sets `permitExpiry = now`). |
+| `execute(subscriptionId)` | Bot (executor) | Validates timing, expiry and the subscriber's balance, then calls `service.execute(subscription)`. |
+| `setExecutor(address, bool)` | Owner | Enables/disables an authorized executor address. |
 | `registerService(address)` | Owner | Whitelists a Service contract. |
+| `removeService(address)` | Owner | De-whitelists a Service contract. |
+| `pause()` / `unpause()` | Owner | Emergency stop for `subscribe` and `execute`. |
 
 #### Access Control & Safety Invariants
 
-- Only the registered executor address can call `execute`. No other address can trigger an execution.
-- `execute` validates that `block.timestamp >= nextExecutionAt` before proceeding. Early execution reverts.
-- `execute` validates `maxExecutions == 0 || executionsCount < maxExecutions`.
-- The Subscriptions contract itself never holds user funds. Funds are pulled from the user's wallet at the moment of execution, via an ERC-20 allowance the user has set on the contract.
-- If the user revokes the ERC-20 allowance, the next execution will revert harmlessly. The subscription remains in state and can be cancelled.
+- Only a registered executor address can call `execute`. No other address can trigger an execution.
+- `execute` validates that `block.timestamp >= lastExecutionTime + interval` before proceeding. Early execution reverts with `TooEarly`.
+- `execute` validates that `block.timestamp <= permitExpiry`, otherwise it reverts with `SubscriptionNotActive` (this also covers cancelled subscriptions, whose `permitExpiry` was set to the cancellation time).
+- `execute` validates that the subscriber holds at least `amountPerCycle`, otherwise it reverts with `InsufficientSubscriptionAmount`.
+- The Subscriptions contract itself never holds user funds. Funds are pulled from the user's wallet at the moment of execution, via Permit2 (`permit2.transferFrom`).
+- If the user revokes the Permit2 allowance or lets it expire, the next execution reverts harmlessly. The subscription remains in state and can be cancelled.
 - A subscriber can cancel at any time, including between execution windows.
+- `permit2` is a hardcoded constant (`0x000000000022D473030F116dDEE9F6B43aC78BA3`), the canonical Permit2 deployment present on all supported chains.
 
 #### Intent / Approval Flow
 
-1. User calls `ERC20.approve(Subscriptions, amount * maxExecutions)` (or a large allowance if unlimited).
-2. User calls `Subscriptions.subscribe(...)` to register the intent on-chain.
+1. User calls `ERC20.approve(Permit2, max)` once per spend token (a one-time, reusable approval to the canonical Permit2 contract).
+2. User signs an off-chain Permit2 `PermitSingle` granting `Subscriptions` an allowance up to the subscription's expiry, then calls `Subscriptions.subscribe(...)` with the permit + signature. The contract registers the allowance via `permit2.permit(...)` and stores the subscription.
 3. The bot monitors `SubscriptionCreated` events and schedules executions.
 4. At each interval, bot calls `Subscriptions.execute(subscriptionId)`.
-5. Subscriptions contract pulls `amountPerCycle` from user via `transferFrom`, forwards it to the Service contract, which executes the swap and sends bought tokens back to the user.
+5. Subscriptions pulls `amountPerCycle` from the user via `permit2.transferFrom`, forwards it to the Service contract, which executes the swap and sends bought tokens back to the user.
 
 ---
 
@@ -306,13 +314,15 @@ A backend service that monitors active subscriptions and submits execution trans
 
 ```
 1. Bot wakes up (cron / scheduler)
-2. Query DB for subscriptions where nextExecutionAt <= now
+2. Query DB for subscriptions where last_execution_time + interval_seconds <= now
+   and permit_expiry >= now (not yet expired/cancelled)
 3. For each due subscription:
-   a. Verify on-chain that subscription is still active
+   a. Verify on-chain that the subscription has not expired (permitExpiry >= now)
+      and the subscriber still holds at least amountPerCycle
    b. Call aggregator API to get best swap route and encoded calldata
    c. Estimate gas; skip if gas cost exceeds threshold (protect user)
    d. Submit execute() tx signed by bot's EOA
-   e. Wait for inclusion; update DB with result and new nextExecutionAt
+   e. Wait for inclusion; update DB with result and new last_execution_time
 4. Emit execution record (success/failure) to DB for frontend to display
 ```
 
@@ -327,8 +337,8 @@ A backend service that monitors active subscriptions and submits execution trans
 ```
 subscriptions {
   id, subscriber_address, service_address, chain, spend_token,
-  amount_per_cycle, interval_seconds, next_execution_at,
-  max_executions, executions_count, active, created_at
+  amount_per_cycle, interval_seconds, last_execution_time,
+  subscription_start_time, permit_expiry, created_at
 }
 
 execution_log {

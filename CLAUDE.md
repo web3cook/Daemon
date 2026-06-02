@@ -22,7 +22,7 @@ frontend/     # React/Next.js web app
 
 Two contracts with a defined interface between them:
 
-- **`Subscriptions.sol`** — Generic protocol. Stores subscription state (subscriber, service, spendToken, amountPerCycle, interval, nextExecutionAt). Only the registered `executor` EOA can call `execute(subscriptionId)`. Users call `subscribe()` and `cancel()`. The contract pulls funds via ERC-20 `transferFrom` at execution time — it never holds funds at rest.
+- **`Subscriptions.sol`** — Generic protocol. Stores subscription state (subscriber, service, spendToken, amountPerCycle, interval, lastExecutionTime, subscriptionStartTime, permitExpiry). Only a registered `executor` EOA can call `execute(subscriptionId)`. Users call `subscribe()` (passing a signed Permit2 `PermitSingle`) and `cancel()`. The contract pulls funds via Permit2 `transferFrom` at execution time — it never holds funds at rest. There is no `maxExecutions`/`active` flag: a sub is active while `now <= permitExpiry`, cancel sets `permitExpiry = now`, and the execution cap is implied by `(permitExpiry - subscriptionStartTime) / interval`. Permit2 is a hardcoded constant (`0x0000...A3`).
 
 - **`SIPService.sol`** — Implements `IService`. Receives spend tokens from Subscriptions, calls the aggregator for best-price swap, sends output tokens directly to the subscriber. Maintains a token whitelist. Has a configurable fee (initially 0, max $0.01–$0.10/tx hardcoded at deploy).
 
