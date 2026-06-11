@@ -52,4 +52,8 @@ export const config = {
   // Optional integrations — agent runs with deterministic rules if these are absent
   anthropicApiKey: process.env['ANTHROPIC_API_KEY'] as string | undefined,
   coincapKey:      process.env['COINCAP_KEY']       as string | undefined,
+
+  // API server
+  databaseUrl: optionalEnv('DATABASE_URL', 'postgres://localhost:5432/sip_daemon'),
+  apiPort:     parseInt(optionalEnv('API_PORT', '3001')),
 } as const
