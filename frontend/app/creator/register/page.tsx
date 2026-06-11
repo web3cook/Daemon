@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useRegisterAgent } from "@/lib/api/hooks";
 import { useApp } from "@/lib/store";
-
-type PricingModel = "flat" | "usage" | "hybrid";
+import type { AgentCategory, PricingModel, RegisterAgentInput } from "@/lib/api/types";
 
 interface RegForm {
   name: string;
-  cat: string;
+  cat: AgentCategory;
   desc: string;
   services: string;
   model: PricingModel;
@@ -17,7 +18,7 @@ interface RegForm {
 
 const INITIAL: RegForm = {
   name: "",
-  cat: "Finance",
+  cat: "finance",
   desc: "",
   services: "",
   model: "flat",
@@ -25,7 +26,14 @@ const INITIAL: RegForm = {
   usage: "0.10",
 };
 
-const CATEGORIES = ["Finance", "Productivity", "Career", "Engineering", "Research", "Other"];
+const CATEGORIES: { value: AgentCategory; label: string }[] = [
+  { value: "finance", label: "Finance" },
+  { value: "productivity", label: "Productivity" },
+  { value: "career", label: "Career" },
+  { value: "engineering", label: "Engineering" },
+  { value: "research", label: "Research" },
+  { value: "other", label: "Other" },
+];
 
 const MODEL_OPTS: { key: PricingModel; label: string; hint: string }[] = [
   { key: "flat", label: "flat", hint: "Fixed $/mo" },
@@ -36,7 +44,9 @@ const MODEL_OPTS: { key: PricingModel; label: string; hint: string }[] = [
 const STEP_LABELS = ["basics", "services + pricing", "review"];
 
 export default function RegisterAgentPage() {
-  const { publishAgent } = useApp();
+  const router = useRouter();
+  const { wallet, openWalletModal, showToast } = useApp();
+  const registerMut = useRegisterAgent();
   const [step, setStep] = useState(1);
   const [reg, setReg] = useState<RegForm>(INITIAL);
 
@@ -54,23 +64,49 @@ export default function RegisterAgentPage() {
         ? `$${reg.price || "0"}/mo min + $${reg.usage || "0"}/run`
         : `$${reg.price || "0"}/mo base + $${reg.usage || "0"}/run`;
 
+  const catLabel = CATEGORIES.find((c) => c.value === reg.cat)?.label ?? reg.cat;
+
   const reviewRows = [
     { k: "NAME", v: reg.name || "—" },
-    { k: "CATEGORY", v: reg.cat },
+    { k: "CATEGORY", v: catLabel },
     { k: "DESCRIPTION", v: reg.desc || "—" },
     { k: "SERVICES", v: chips.join(" · ") || "—" },
     { k: "PRICING", v: priceSummary },
   ];
 
   const publish = () => {
-    const name = reg.name.trim() || "Untitled agent";
-    publishAgent({
-      name,
-      av: name.slice(0, 2).toLowerCase(),
-      tag: `${name.toLowerCase().replace(/\s+/g, "-")} · ${reg.cat}`,
+    if (!wallet) {
+      openWalletModal();
+      showToast("connect a wallet to publish");
+      return;
+    }
+    const input: RegisterAgentInput = {
+      user_address: wallet.address,
+      name: reg.name.trim() || "Untitled agent",
+      category: reg.cat,
+      short_description: reg.desc,
+      services: chips,
+      pricing_model: reg.model,
+      plans: [
+        {
+          name: "base",
+          billing_interval: "monthly",
+          base_price: { amount: reg.price || "0", currency: "USDC" },
+          usage_price: reg.model !== "flat" ? { amount: reg.usage || "0", currency: "USDC" } : null,
+          usage_unit: reg.model !== "flat" ? "run" : null,
+          description: reg.desc || "",
+        },
+      ],
+    };
+    registerMut.mutate(input, {
+      onSuccess: (data) => {
+        setReg(INITIAL);
+        setStep(1);
+        router.push("/creator");
+        showToast(`${data.agent.name} is live in the marketplace`);
+      },
+      onError: (e) => showToast(e instanceof Error ? e.message : "couldn’t publish agent"),
     });
-    setStep(1);
-    setReg(INITIAL);
   };
 
   return (
@@ -112,10 +148,12 @@ export default function RegisterAgentPage() {
             <select
               className="input"
               value={reg.cat}
-              onChange={(e) => patch({ cat: e.target.value })}
+              onChange={(e) => patch({ cat: e.target.value as AgentCategory })}
             >
               {CATEGORIES.map((c) => (
-                <option key={c}>{c}</option>
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
               ))}
             </select>
           </div>
@@ -213,15 +251,20 @@ export default function RegisterAgentPage() {
 
       <div className="reg-actions">
         {step > 1 && (
-          <button className="btn-back" onClick={() => setStep(step - 1)}>
+          <button className="btn-back" onClick={() => setStep(step - 1)} disabled={registerMut.isPending}>
             ← back
           </button>
         )}
         <button
           className="btn-next"
+          disabled={registerMut.isPending}
           onClick={() => (step === 3 ? publish() : setStep(step + 1))}
         >
-          {step === 3 ? "publish agent →" : "continue →"}
+          {step === 3
+            ? registerMut.isPending
+              ? "publishing…"
+              : "publish agent →"
+            : "continue →"}
         </button>
       </div>
     </div>

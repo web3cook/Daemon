@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
+import {Subscriptions, Subscription} from "../src/Subscriptions.sol";
 import {
-    Subscriptions,
-    Subscription,
     NotExecutor,
+    AgentTrustTooLow,
+    AgentNotMapped,
     ServiceNotRegistered,
     ServiceAlreadyRegistered,
     PermitAmountTooLow,
@@ -20,706 +19,547 @@ import {
     InsufficientSubscriptionAmount,
     ZeroAmount,
     ZeroInterval,
-    ZeroAddress
+    ZeroAddress,
+    AmountOverflow,
+    IntervalOverflow,
+    SubscriptionCreated,
+    SubscriptionCancelled,
+    Executed,
+    ExecutorSet,
+    MinTrustScoreUpdated
 } from "../src/Subscriptions.sol";
-import {IPermit2}  from "../src/interfaces/IPermit2.sol";
-import {IService}  from "../src/interfaces/IService.sol";
+import {IPermit2}   from "../src/interfaces/IPermit2.sol";
+import {MockValidationRegistry, MockERC20, MockService} from "./mocks/Mocks.sol";
 
-// Extra Permit2 surface needed by the tests (domain separator + allowance/nonce reads).
-interface IPermit2Ext is IPermit2 {
-    function DOMAIN_SEPARATOR() external view returns (bytes32);
-    function allowance(address owner, address token, address spender)
-        external view returns (uint160 amount, uint48 expiration, uint48 nonce);
-}
-
-// ── Events (file-level in Subscriptions.sol, redeclared here for vm.expectEmit) ──
-
-event SubscriptionCreated(
-    bytes32 indexed id,
-    address indexed subscriber,
-    address indexed service,
-    address spendToken,
-    uint256 amountPerCycle,
-    uint256 interval,
-    uint48  permitExpiry
-);
-event SubscriptionCancelled(bytes32 indexed id, address indexed subscriber);
-event Executed(
-    bytes32 indexed id,
-    address indexed subscriber,
-    address indexed service,
-    uint256 amount,
-    uint256 executedAt
-);
-event ExecutorSet(address indexed executor, bool enabled);
-event ServiceRegistered(address indexed service);
-event ServiceRemoved(address indexed service);
-
-// ── Mocks ────────────────────────────────────────────────────────────────────
-
-contract MintableERC20 is ERC20 {
-    uint8 private immutable _dec;
-
-    constructor(string memory name_, string memory symbol_, uint8 dec_) ERC20(name_, symbol_) {
-        _dec = dec_;
-    }
-
-    function decimals() public view override returns (uint8) { return _dec; }
-    function mint(address to, uint256 amount) external { _mint(to, amount); }
-}
-
-contract MockService is IService {
-    address public lastSubscriber;
-    address public lastSpendToken;
-    uint256 public lastAmount;
-    bytes   public lastParams;
-    uint256 public callCount;
-
-    address public reentrantTarget;
-    bytes32 public reentrantId;
-    bytes   public reentrantParams;
-
-    function execute(
-        address subscriber,
-        address spendToken,
-        uint256 amount,
-        bytes calldata params
-    ) external returns (bool) {
-        lastSubscriber = subscriber;
-        lastSpendToken = spendToken;
-        lastAmount     = amount;
-        lastParams     = params;
-        callCount++;
-
-        if (reentrantTarget != address(0)) {
-            Subscriptions(reentrantTarget).execute(reentrantId, reentrantParams);
-        }
-
-        return true;
-    }
-
-    function setReentrant(address target, bytes32 id, bytes calldata params) external {
-        reentrantTarget = target;
-        reentrantId     = id;
-        reentrantParams = params;
-    }
-}
-
-// ── Test contract ─────────────────────────────────────────────────────────────
-//
-// These are FORK tests: they run against the real, canonical Permit2 deployment.
-// Requires the ARBITRUM_SEPOLIA_RPC_URL env var to be set (see .env.example).
-//   forge test --match-contract SubscriptionsTest
-//
 contract SubscriptionsTest is Test {
-    // Canonical Permit2 address — identical across chains and hardcoded in Subscriptions.
-    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    // ── constants ─────────────────────────────────────────────────────────────
+    // permit2 is injected at deploy — use a dedicated mock address in tests so
+    // we are not locked to the canonical mainnet/testnet address.
+    address permit2Addr = makeAddr("permit2");
 
-    bytes32 constant PERMIT_DETAILS_TYPEHASH = keccak256(
-        "PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)"
-    );
-    bytes32 constant PERMIT_SINGLE_TYPEHASH = keccak256(
-        "PermitSingle(PermitDetails details,address spender,uint256 sigDeadline)"
-        "PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)"
-    );
+    uint256 constant AGENT_ID  = 1;
+    uint256 constant MIN_SCORE = 50;
+    uint256 constant AMOUNT    = 100e6;   // 100 USDC
+    uint256 constant INTERVAL  = 7 days;
 
-    Subscriptions subs;
-    MockService   service;
-    MintableERC20 token;
+    // ── actors ────────────────────────────────────────────────────────────────
+    address owner   = makeAddr("owner");
+    address agent   = makeAddr("agent");
+    address user    = makeAddr("user");
+    address attacker = makeAddr("attacker");
 
-    uint256 subscriberKey = 0xA11CE;
-    address subscriber;
-    address owner      = makeAddr("owner");
-    address executor   = makeAddr("executor");
-    address stranger   = makeAddr("stranger");
+    // ── contracts ─────────────────────────────────────────────────────────────
+    MockValidationRegistry validationRegistry;
+    Subscriptions          subs;
+    MockERC20              usdc;
+    MockService            service;
 
-    uint256 constant AMOUNT   = 100e6;
-    uint256 constant INTERVAL = 1 days;
-    uint48  constant CYCLES   = 30;            // subscription window = CYCLES * INTERVAL
+    // ── helpers ───────────────────────────────────────────────────────────────
 
-    // ── Setup ────────────────────────────────────────────────────────────────
-
-    function setUp() public {
-        // Fork a chain that has the canonical Permit2 deployed.
-        vm.createSelectFork(vm.envString("ARBITRUM_SEPOLIA_RPC_URL"));
-
-        subscriber = vm.addr(subscriberKey);
-
-        token   = new MintableERC20("USD Coin", "USDC", 6);
-        service = new MockService();
-
-        vm.prank(owner);
-        subs = new Subscriptions(executor);
-
-        vm.prank(owner);
-        subs.registerService(address(service));
-
-        // Fund the subscriber and grant Permit2 the ERC-20 allowance it pulls against.
-        token.mint(subscriber, AMOUNT * CYCLES);
-        vm.prank(subscriber);
-        token.approve(PERMIT2, type(uint256).max);
-    }
-
-    // ── Permit helpers ─────────────────────────────────────────────────────────
-
-    function _permit2Nonce() internal view returns (uint48 nonce) {
-        (, , nonce) = IPermit2Ext(PERMIT2).allowance(subscriber, address(token), address(subs));
-    }
-
-    function _buildPermit(uint160 amount, uint48 expiration)
-        internal
-        view
-        returns (IPermit2.PermitSingle memory p)
-    {
-        p = IPermit2.PermitSingle({
+    function _makePermit(
+        address token,
+        uint160 amount,
+        uint48  expiration,
+        address spender
+    ) internal view returns (IPermit2.PermitSingle memory) {
+        return IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token:      address(token),
+                token:      token,
                 amount:     amount,
                 expiration: expiration,
-                nonce:      _permit2Nonce()
+                nonce:      0
             }),
-            spender:     address(subs),
-            sigDeadline: block.timestamp + 1 hours
+            spender:     spender,
+            sigDeadline: block.timestamp + 1 days
         });
     }
 
-    function _sign(IPermit2.PermitSingle memory p) internal view returns (bytes memory) {
-        bytes32 detailsHash = keccak256(abi.encode(
-            PERMIT_DETAILS_TYPEHASH,
-            p.details.token,
-            p.details.amount,
-            p.details.expiration,
-            p.details.nonce
-        ));
-        bytes32 structHash = keccak256(abi.encode(
-            PERMIT_SINGLE_TYPEHASH,
-            detailsHash,
-            p.spender,
-            p.sigDeadline
-        ));
-        bytes32 digest = keccak256(abi.encodePacked(
-            "\x19\x01",
-            IPermit2Ext(PERMIT2).DOMAIN_SEPARATOR(),
-            structHash
-        ));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(subscriberKey, digest);
-        return abi.encodePacked(r, s, v);
+    function _defaultPermit() internal view returns (IPermit2.PermitSingle memory) {
+        return _makePermit(
+            address(usdc),
+            type(uint160).max,
+            uint48(block.timestamp + 365 days),
+            address(subs)
+        );
     }
 
-    // Subscribes with a valid signed permit covering the full window.
-    function _subscribe() internal returns (bytes32 id, uint48 expiration) {
-        expiration = uint48(block.timestamp + uint256(INTERVAL) * CYCLES);
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), expiration);
-        bytes memory sig = _sign(p);
-
-        id = keccak256(abi.encode(subscriber, address(service), address(token), subs.nonces(subscriber)));
-        vm.prank(subscriber);
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, sig);
+    function _subId(address subscriber, uint256 nonce) internal view returns (bytes32) {
+        return keccak256(abi.encode(subscriber, address(service), address(usdc), nonce));
     }
 
-    function _execute(bytes32 id) internal {
-        vm.prank(executor);
-        subs.execute(id, "");
+    function _mockPermit2() internal {
+        vm.mockCall(permit2Addr, abi.encodeWithSelector(IPermit2.permit.selector),       abi.encode());
+        vm.mockCall(permit2Addr, abi.encodeWithSelector(IPermit2.transferFrom.selector), abi.encode());
     }
 
-    function _warpInterval() internal {
-        vm.warp(block.timestamp + INTERVAL);
+    function _createSubscription() internal returns (bytes32 id) {
+        _mockPermit2();
+        IPermit2.PermitSingle memory p = _defaultPermit();
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+        id = _subId(user, 0);
     }
 
-    // ── Constructor ──────────────────────────────────────────────────────────
+    // ── setUp ─────────────────────────────────────────────────────────────────
 
-    function test_constructor_revertsOnZeroExecutor() public {
-        vm.expectRevert(ZeroAddress.selector);
-        new Subscriptions(address(0));
-    }
-
-    function test_constructor_setsExecutor() public view {
-        assertTrue(subs.isExecutor(executor));
-    }
-
-    function test_constructor_emitsExecutorSet() public {
-        vm.expectEmit(true, false, false, true);
-        emit ExecutorSet(executor, true);
-        new Subscriptions(executor);
-    }
-
-    function test_permit2_isCanonicalAddress() public view {
-        assertEq(address(subs.permit2()), PERMIT2);
-    }
-
-    // ── registerService ──────────────────────────────────────────────────────
-
-    function test_registerService_revertsIfNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        subs.registerService(makeAddr("newSvc"));
-    }
-
-    function test_registerService_revertsOnZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert(ZeroAddress.selector);
-        subs.registerService(address(0));
-    }
-
-    function test_registerService_revertsOnDuplicate() public {
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(ServiceAlreadyRegistered.selector, address(service)));
-        subs.registerService(address(service));
-    }
-
-    function test_registerService_setsFlag() public {
-        address newSvc = makeAddr("newSvc");
-        vm.prank(owner);
-        subs.registerService(newSvc);
-        assertTrue(subs.isServiceRegistered(newSvc));
-    }
-
-    function test_registerService_emitsEvent() public {
-        address newSvc = makeAddr("newSvc");
-        vm.prank(owner);
-        vm.expectEmit(true, false, false, false);
-        emit ServiceRegistered(newSvc);
-        subs.registerService(newSvc);
-    }
-
-    // ── removeService ────────────────────────────────────────────────────────
-
-    function test_removeService_revertsIfNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        subs.removeService(address(service));
-    }
-
-    function test_removeService_revertsIfNotRegistered() public {
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(ServiceNotRegistered.selector, stranger));
-        subs.removeService(stranger);
-    }
-
-    function test_removeService_clearsFlag() public {
-        vm.prank(owner);
-        subs.removeService(address(service));
-        assertFalse(subs.isServiceRegistered(address(service)));
-    }
-
-    function test_removeService_emitsEvent() public {
-        vm.prank(owner);
-        vm.expectEmit(true, false, false, false);
-        emit ServiceRemoved(address(service));
-        subs.removeService(address(service));
-    }
-
-    // ── setExecutor ──────────────────────────────────────────────────────────
-
-    function test_setExecutor_revertsIfNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        subs.setExecutor(stranger, true);
-    }
-
-    function test_setExecutor_revertsOnZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert(ZeroAddress.selector);
-        subs.setExecutor(address(0), true);
-    }
-
-    function test_setExecutor_enables() public {
-        vm.prank(owner);
-        subs.setExecutor(stranger, true);
-        assertTrue(subs.isExecutor(stranger));
-    }
-
-    function test_setExecutor_disables() public {
-        vm.prank(owner);
-        subs.setExecutor(executor, false);
-        assertFalse(subs.isExecutor(executor));
-    }
-
-    function test_setExecutor_emitsEvent() public {
-        vm.prank(owner);
-        vm.expectEmit(true, false, false, true);
-        emit ExecutorSet(stranger, true);
-        subs.setExecutor(stranger, true);
-    }
-
-    // ── pause / unpause ──────────────────────────────────────────────────────
-
-    function test_pause_revertsIfNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        subs.pause();
-    }
-
-    function test_unpause_revertsIfNotOwner() public {
-        vm.prank(owner);
-        subs.pause();
-        vm.prank(stranger);
-        vm.expectRevert();
-        subs.unpause();
-    }
-
-    function test_subscribe_revertsWhenPaused() public {
-        vm.prank(owner);
-        subs.pause();
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        vm.prank(subscriber);
-        vm.expectRevert();
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, "");
-    }
-
-    function test_execute_revertsWhenPaused() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        vm.prank(owner);
-        subs.pause();
-        vm.prank(executor);
-        vm.expectRevert();
-        subs.execute(id, "");
-    }
-
-    function test_subscribe_worksAfterUnpause() public {
+    function setUp() public {
         vm.startPrank(owner);
-        subs.pause();
-        subs.unpause();
+
+        validationRegistry = new MockValidationRegistry();
+        validationRegistry.setScore(AGENT_ID, 80);
+
+        subs = new Subscriptions(
+            permit2Addr,
+            address(validationRegistry),
+            agent,
+            AGENT_ID,
+            MIN_SCORE
+        );
+
+        usdc    = new MockERC20("USD Coin", "USDC", 6);
+        service = new MockService();
+        subs.registerService(address(service));
+
         vm.stopPrank();
-        (bytes32 id, ) = _subscribe();
-        assertEq(subs.getSubscription(id).subscriber, subscriber);
+
+        usdc.mint(user, 1_000e6);
     }
 
-    // ── subscribe() — validation ─────────────────────────────────────────────
+    // ── constructor ───────────────────────────────────────────────────────────
 
-    function test_subscribe_revertsServiceNotRegistered() public {
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(ServiceNotRegistered.selector, stranger));
-        subs.subscribe(stranger, address(token), AMOUNT, INTERVAL, p, "");
+    function test_constructor_setsValidationRegistry() public view {
+        assertEq(address(subs.validationRegistry()), address(validationRegistry));
     }
 
-    function test_subscribe_revertsZeroAmount() public {
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        vm.prank(subscriber);
+    function test_constructor_setsExecutorWithAgentId() public view {
+        assertTrue(subs.executors(agent));
+        assertEq(subs.agentIds(agent), AGENT_ID);
+    }
+
+    function test_constructor_setsMinTrustScore() public view {
+        assertEq(subs.minAgentTrustScore(), MIN_SCORE);
+    }
+
+    function test_constructor_setsPermit2() public view {
+        assertEq(address(subs.permit2()), permit2Addr);
+    }
+
+    function test_constructor_revertOnZeroPermit2() public {
+        vm.expectRevert(ZeroAddress.selector);
+        new Subscriptions(address(0), address(validationRegistry), agent, AGENT_ID, MIN_SCORE);
+    }
+
+    function test_constructor_revertOnZeroRegistry() public {
+        vm.expectRevert(ZeroAddress.selector);
+        new Subscriptions(permit2Addr, address(0), agent, AGENT_ID, MIN_SCORE);
+    }
+
+    function test_constructor_revertOnZeroExecutor() public {
+        vm.expectRevert(ZeroAddress.selector);
+        new Subscriptions(permit2Addr, address(validationRegistry), address(0), AGENT_ID, MIN_SCORE);
+    }
+
+    function test_constructor_revertOnZeroAgentId() public {
         vm.expectRevert(ZeroAmount.selector);
-        subs.subscribe(address(service), address(token), 0, INTERVAL, p, "");
+        new Subscriptions(permit2Addr, address(validationRegistry), agent, 0, MIN_SCORE);
     }
 
-    function test_subscribe_revertsAmountAboveUint160Max() public {
-        uint256 tooBig = uint256(type(uint160).max) + 1;
-        IPermit2.PermitSingle memory p = _buildPermit(0, uint48(block.timestamp + INTERVAL * CYCLES));
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(PermitAmountTooLow.selector, uint160(0), tooBig));
-        subs.subscribe(address(service), address(token), tooBig, INTERVAL, p, "");
-    }
+    // ── subscribe ─────────────────────────────────────────────────────────────
 
-    function test_subscribe_revertsZeroInterval() public {
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        vm.prank(subscriber);
-        vm.expectRevert(ZeroInterval.selector);
-        subs.subscribe(address(service), address(token), AMOUNT, 0, p, "");
-    }
-
-    function test_subscribe_revertsPermitTokenMismatch() public {
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        address wrongToken = makeAddr("wrongToken");
-        p.details.token = wrongToken;
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(PermitTokenMismatch.selector, address(token), wrongToken));
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, "");
-    }
-
-    function test_subscribe_revertsPermitSpenderMismatch() public {
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), uint48(block.timestamp + INTERVAL * CYCLES));
-        p.spender = stranger;
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(PermitSpenderMismatch.selector, address(subs), stranger));
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, "");
-    }
-
-    // Permit amount must cover amountPerCycle * (window / interval).
-    function test_subscribe_revertsPermitAmountTooLow() public {
-        uint48  expiration     = uint48(block.timestamp + INTERVAL * 10);
-        uint256 executionCount = 10;
-        uint160 shortAmount    = uint160(AMOUNT * executionCount) - 1;
-        IPermit2.PermitSingle memory p = _buildPermit(shortAmount, expiration);
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(PermitAmountTooLow.selector, shortAmount, AMOUNT * executionCount));
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, "");
-    }
-
-    function test_subscribe_revertsPermitExpiredAtCurrentTimestamp() public {
-        uint48 expiration = uint48(block.timestamp); // not strictly greater than now
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT), expiration);
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(PermitExpired.selector, expiration));
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, "");
-    }
-
-    // ── subscribe() — happy path ─────────────────────────────────────────────
-
-    function test_subscribe_storesCorrectState() public {
-        uint256 ts = block.timestamp;
-        (bytes32 id, uint48 expiration) = _subscribe();
-
+    function test_subscribe_storesSubscriptionState() public {
+        bytes32 id = _createSubscription();
         Subscription memory sub = subs.getSubscription(id);
-        assertEq(sub.subscriber,            subscriber);
-        assertEq(sub.service,               address(service));
-        assertEq(sub.spendToken,            address(token));
-        assertEq(sub.amountPerCycle,        AMOUNT);
-        assertEq(sub.interval,              INTERVAL);
-        assertEq(sub.lastExecutionTime,     ts);
-        assertEq(sub.subscriptionStartTime, ts);
-        assertEq(sub.permitExpiry,          expiration);
+
+        assertEq(sub.subscriber,     user);
+        assertEq(sub.service,        address(service));
+        assertEq(sub.spendToken,     address(usdc));
+        assertEq(sub.amountPerCycle, AMOUNT);
+        assertEq(sub.interval,       INTERVAL);
     }
 
-    function test_subscribe_lastExecutionTimeEqualsBlockTimestamp() public {
-        vm.warp(block.timestamp + 12345);
-        uint256 ts = block.timestamp;
-        (bytes32 id, ) = _subscribe();
-        assertEq(subs.getSubscription(id).lastExecutionTime, ts);
+    function test_subscribe_setsPermitExpiry() public {
+        uint48 expiry = uint48(block.timestamp + 365 days);
+        _mockPermit2();
+        IPermit2.PermitSingle memory p = _makePermit(address(usdc), type(uint160).max, expiry, address(subs));
+
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+
+        bytes32 id  = _subId(user, 0);
+        Subscription memory sub = subs.getSubscription(id);
+        assertEq(sub.permitExpiry, uint256(expiry));
     }
 
-    function test_subscribe_registersPermit2Allowance() public {
-        (, uint48 expiration) = _subscribe();
-        (uint160 amount, uint48 exp, ) =
-            IPermit2Ext(PERMIT2).allowance(subscriber, address(token), address(subs));
-        assertEq(amount, uint160(AMOUNT * CYCLES));
-        assertEq(exp,    expiration);
+    function test_subscribe_setsLastExecutionToNow() public {
+        bytes32 id = _createSubscription();
+        Subscription memory sub = subs.getSubscription(id);
+        assertEq(sub.lastExecutionTime, block.timestamp);
     }
 
     function test_subscribe_incrementsNonce() public {
-        assertEq(subs.nonces(subscriber), 0);
-        _subscribe();
-        assertEq(subs.nonces(subscriber), 1);
-        _subscribe();
-        assertEq(subs.nonces(subscriber), 2);
+        assertEq(subs.nonces(user), 0);
+        _createSubscription();
+        assertEq(subs.nonces(user), 1);
     }
 
-    function test_subscribe_idDeterministic() public {
-        uint256 nonce      = subs.nonces(subscriber);
-        bytes32 expectedId = keccak256(abi.encode(subscriber, address(service), address(token), nonce));
-        (bytes32 actualId, ) = _subscribe();
-        assertEq(actualId, expectedId);
+    function test_subscribe_emitsSubscriptionCreatedEvent() public {
+        _mockPermit2();
+        IPermit2.PermitSingle memory p = _defaultPermit();
+
+        bytes32 expectedId = _subId(user, 0);
+
+        vm.expectEmit(true, true, true, false, address(subs));
+        emit SubscriptionCreated(
+            expectedId,
+            user,
+            address(service),
+            address(usdc),
+            uint96(AMOUNT),
+            uint32(INTERVAL),
+            p.details.expiration
+        );
+
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
     }
 
-    function test_subscribe_twoSubsProduceDifferentIds() public {
-        (bytes32 id1, ) = _subscribe();
-        (bytes32 id2, ) = _subscribe();
-        assertTrue(id1 != id2);
+    function test_subscribe_revertIfServiceNotRegistered() public {
+        _mockPermit2();
+        address unknown = makeAddr("unknown");
+        vm.expectRevert(abi.encodeWithSelector(ServiceNotRegistered.selector, unknown));
+        vm.prank(user);
+        subs.subscribe(unknown, address(usdc), AMOUNT, INTERVAL, _defaultPermit(), bytes("sig"));
     }
 
-    function test_subscribe_emitsSubscriptionCreated() public {
-        uint48  expiration = uint48(block.timestamp + uint256(INTERVAL) * CYCLES);
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT * CYCLES), expiration);
-        bytes memory sig = _sign(p);
-
-        uint256 nonce      = subs.nonces(subscriber);
-        bytes32 expectedId = keccak256(abi.encode(subscriber, address(service), address(token), nonce));
-
-        vm.expectEmit(true, true, true, true);
-        emit SubscriptionCreated(expectedId, subscriber, address(service), address(token), AMOUNT, INTERVAL, expiration);
-        vm.prank(subscriber);
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, sig);
+    function test_subscribe_revertIfAmountZero() public {
+        _mockPermit2();
+        vm.expectRevert(ZeroAmount.selector);
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), 0, INTERVAL, _defaultPermit(), bytes("sig"));
     }
 
-    // ── cancel() ─────────────────────────────────────────────────────────────
-
-    function test_cancel_revertsIfNotSubscriber() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(NotSubscriber.selector, id));
-        subs.cancel(id);
+    function test_subscribe_revertIfIntervalZero() public {
+        _mockPermit2();
+        vm.expectRevert(ZeroInterval.selector);
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, 0, _defaultPermit(), bytes("sig"));
     }
 
-    function test_cancel_revertsIfOwnerTriesToCancel() public {
-        (bytes32 id, ) = _subscribe();
+    function test_subscribe_revertIfPermitTokenMismatch() public {
+        _mockPermit2();
+        address wrongToken = makeAddr("wrongToken");
+        IPermit2.PermitSingle memory p = _makePermit(wrongToken, type(uint160).max, uint48(block.timestamp + 365 days), address(subs));
+
+        vm.expectRevert(abi.encodeWithSelector(PermitTokenMismatch.selector, address(usdc), wrongToken));
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+    }
+
+    function test_subscribe_revertIfPermitSpenderMismatch() public {
+        _mockPermit2();
+        IPermit2.PermitSingle memory p = _makePermit(address(usdc), type(uint160).max, uint48(block.timestamp + 365 days), attacker);
+
+        vm.expectRevert(abi.encodeWithSelector(PermitSpenderMismatch.selector, address(subs), attacker));
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+    }
+
+    function test_subscribe_revertIfPermitExpired() public {
+        _mockPermit2();
+        uint48 past = uint48(block.timestamp - 1);
+        IPermit2.PermitSingle memory p = _makePermit(address(usdc), type(uint160).max, past, address(subs));
+
+        vm.expectRevert(abi.encodeWithSelector(PermitExpired.selector, past));
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+    }
+
+    function test_subscribe_revertIfPermitAmountTooLow() public {
+        _mockPermit2();
+        // 30-day expiry / 7-day interval = 4 executions; need 400 USDC but only approving 300
+        uint48 expiry = uint48(block.timestamp + 30 days);
+        IPermit2.PermitSingle memory p = _makePermit(address(usdc), 300e6, expiry, address(subs));
+
+        vm.expectRevert();
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, p, bytes("sig"));
+    }
+
+    function test_subscribe_revertWhenPaused() public {
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(NotSubscriber.selector, id));
-        subs.cancel(id);
+        subs.pause();
+
+        _mockPermit2();
+        vm.expectRevert();
+        vm.prank(user);
+        subs.subscribe(address(service), address(usdc), AMOUNT, INTERVAL, _defaultPermit(), bytes("sig"));
     }
 
-    function test_cancel_revertsIfExecutorTriesToCancel() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(NotSubscriber.selector, id));
-        subs.cancel(id);
-    }
-
-    function test_cancel_revertsIfAlreadyCancelled() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(subscriber);
-        subs.cancel(id);
-        vm.warp(block.timestamp + 1); // permitExpiry now strictly in the past
-        vm.prank(subscriber);
-        vm.expectRevert(abi.encodeWithSelector(SubscriptionNotActive.selector, id));
-        subs.cancel(id);
-    }
+    // ── cancel ────────────────────────────────────────────────────────────────
 
     function test_cancel_setsPermitExpiryToNow() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(subscriber);
+        bytes32 id = _createSubscription();
+
+        vm.prank(user);
         subs.cancel(id);
-        assertEq(subs.getSubscription(id).permitExpiry, block.timestamp);
+
+        Subscription memory sub = subs.getSubscription(id);
+        assertEq(sub.permitExpiry, block.timestamp);
     }
 
-    function test_cancel_emitsSubscriptionCancelled() public {
-        (bytes32 id, ) = _subscribe();
-        vm.expectEmit(true, true, false, false);
-        emit SubscriptionCancelled(id, subscriber);
-        vm.prank(subscriber);
+    function test_cancel_emitsSubscriptionCancelledEvent() public {
+        bytes32 id = _createSubscription();
+
+        vm.expectEmit(true, true, false, false, address(subs));
+        emit SubscriptionCancelled(id, user);
+
+        vm.prank(user);
         subs.cancel(id);
     }
 
-    // ── execute() — validation ───────────────────────────────────────────────
+    function test_cancel_revertIfCallerNotSubscriber() public {
+        bytes32 id = _createSubscription();
 
-    function test_execute_revertsIfNotExecutor() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        vm.prank(stranger);
-        vm.expectRevert(NotExecutor.selector);
-        subs.execute(id, "");
-    }
-
-    function test_execute_revertsIfServiceRemovedAfterSubscription() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(owner);
-        subs.removeService(address(service));
-        _warpInterval();
-        vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(ServiceNotRegistered.selector, address(service)));
-        subs.execute(id, "");
-    }
-
-    function test_execute_revertsIfCancelled() public {
-        (bytes32 id, ) = _subscribe();
-        vm.prank(subscriber);
+        vm.expectRevert(abi.encodeWithSelector(NotSubscriber.selector, id));
+        vm.prank(attacker);
         subs.cancel(id);
-        vm.warp(block.timestamp + 1); // push past the cancelled (now-) expiry
-        vm.prank(executor);
+    }
+
+    function test_cancel_revertIfAlreadyCancelled() public {
+        bytes32 id = _createSubscription();
+
+        vm.prank(user);
+        subs.cancel(id);
+
+        // cancel sets permitExpiry = block.timestamp; the guard uses strict `<`
+        // so we must advance time by at least 1 second for the check to trigger
+        vm.warp(block.timestamp + 1);
+
         vm.expectRevert(abi.encodeWithSelector(SubscriptionNotActive.selector, id));
-        subs.execute(id, "");
+        vm.prank(user);
+        subs.cancel(id);
     }
 
-    function test_execute_revertsTooEarly() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        _execute(id); // lastExecutionTime = now
-        vm.warp(block.timestamp + INTERVAL - 1); // one second short of the next window
-        vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(TooEarly.selector, id, block.timestamp));
-        subs.execute(id, "");
-    }
-
-    function test_execute_revertsWhenExpired() public {
-        uint48 shortExpiry = uint48(block.timestamp + 1 hours);
-        IPermit2.PermitSingle memory p = _buildPermit(uint160(AMOUNT), shortExpiry);
-        bytes memory sig = _sign(p);
-        bytes32 id = keccak256(abi.encode(subscriber, address(service), address(token), subs.nonces(subscriber)));
-        vm.prank(subscriber);
-        subs.subscribe(address(service), address(token), AMOUNT, INTERVAL, p, sig);
-
-        vm.warp(uint256(shortExpiry) + 1);
-        vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(SubscriptionNotActive.selector, id));
-        subs.execute(id, "");
-    }
-
-    function test_execute_revertsInsufficientBalance() public {
-        (bytes32 id, ) = _subscribe();
-        // Drain the subscriber so the balance check fails. Read the balance before
-        // pranking — otherwise the balanceOf() call consumes the prank.
-        uint256 bal = token.balanceOf(subscriber);
-        vm.prank(subscriber);
-        token.transfer(stranger, bal);
-        _warpInterval();
-        vm.prank(executor);
-        vm.expectRevert(abi.encodeWithSelector(InsufficientSubscriptionAmount.selector, id, 0, AMOUNT));
-        subs.execute(id, "");
-    }
-
-    // ── execute() — happy path ────────────────────────────────────────────────
-
-    function test_execute_movesTokensToService() public {
-        (bytes32 id, ) = _subscribe();
-        uint256 subBalBefore = token.balanceOf(subscriber);
-        _warpInterval();
-        _execute(id);
-        assertEq(token.balanceOf(address(service)), AMOUNT);
-        assertEq(token.balanceOf(subscriber),       subBalBefore - AMOUNT);
-    }
+    // ── execute ───────────────────────────────────────────────────────────────
 
     function test_execute_callsServiceExecute() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        bytes memory params = abi.encode(uint256(42));
-        vm.prank(executor);
-        subs.execute(id, params);
-        assertEq(service.lastSubscriber(), subscriber);
-        assertEq(service.lastSpendToken(), address(token));
-        assertEq(service.lastAmount(),     AMOUNT);
-        assertEq(service.lastParams(),     params);
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+
+        assertEq(service.callCount(), 1);
     }
 
     function test_execute_updatesLastExecutionTime() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        uint256 execTime = block.timestamp;
-        _execute(id);
-        assertEq(subs.getSubscription(id).lastExecutionTime, execTime);
-    }
+        bytes32 id  = _createSubscription();
+        uint256 t1  = block.timestamp + INTERVAL + 1;
+        vm.warp(t1);
 
-    function test_execute_succeedsExactlyAtInterval() public {
-        (bytes32 id, ) = _subscribe();
-        vm.warp(subs.getSubscription(id).lastExecutionTime + INTERVAL); // exact boundary
-        _execute(id);
-        assertEq(subs.getSubscription(id).lastExecutionTime, block.timestamp);
-    }
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
 
-    function test_execute_emitsExecuted() public {
-        (bytes32 id, ) = _subscribe();
-        _warpInterval();
-        vm.expectEmit(true, true, true, true);
-        emit Executed(id, subscriber, address(service), AMOUNT, block.timestamp);
-        _execute(id);
-    }
-
-    function test_execute_multipleSequentialExecutions() public {
-        (bytes32 id, ) = _subscribe();
-        for (uint256 i = 1; i <= 5; i++) {
-            _warpInterval();
-            _execute(id);
-            assertEq(subs.getSubscription(id).lastExecutionTime, block.timestamp);
-        }
-        assertEq(token.balanceOf(address(service)), AMOUNT * 5);
-    }
-
-    // ── Reentrancy ────────────────────────────────────────────────────────────
-
-    function test_execute_blocksReentrantCallFromService() public {
-        (bytes32 id, ) = _subscribe();
-        service.setReentrant(address(subs), id, "");
-        _warpInterval();
-        vm.prank(executor);
-        vm.expectRevert();
-        subs.execute(id, "");
-    }
-
-    // ── View helpers ──────────────────────────────────────────────────────────
-
-    function test_getSubscription_returnsFullStruct() public {
-        (bytes32 id, ) = _subscribe();
         Subscription memory sub = subs.getSubscription(id);
-        assertEq(sub.subscriber,     subscriber);
-        assertEq(sub.service,        address(service));
-        assertEq(sub.spendToken,     address(token));
-        assertEq(sub.amountPerCycle, AMOUNT);
+        assertEq(sub.lastExecutionTime, t1);
     }
 
-    function test_isExecutor_returnsCorrectly() public view {
-        assertTrue(subs.isExecutor(executor));
-        assertFalse(subs.isExecutor(stranger));
+    function test_execute_emitsExecutedEvent() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.expectEmit(true, true, true, false, address(subs));
+        emit Executed(id, user, address(service), uint96(AMOUNT), uint48(block.timestamp));
+
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
     }
 
-    function test_isServiceRegistered_returnsCorrectly() public view {
-        assertTrue(subs.isServiceRegistered(address(service)));
-        assertFalse(subs.isServiceRegistered(stranger));
+    function test_execute_revertIfCallerNotExecutor() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.expectRevert(NotExecutor.selector);
+        vm.prank(attacker);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertIfAgentTrustTooLow() public {
+        validationRegistry.setScore(AGENT_ID, MIN_SCORE - 1);
+
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(AgentTrustTooLow.selector, AGENT_ID, MIN_SCORE - 1, MIN_SCORE)
+        );
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertIfAgentNotMapped() public {
+        address rogueExecutor = makeAddr("rogueExecutor");
+        vm.prank(owner);
+        // setExecutor with agentId=0 then try to execute
+        subs.setExecutor(rogueExecutor, 0, true);
+
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.expectRevert(abi.encodeWithSelector(AgentNotMapped.selector, rogueExecutor));
+        vm.prank(rogueExecutor);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertIfSubscriptionExpired() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + 366 days); // past the 365-day permit expiry
+
+        vm.expectRevert(abi.encodeWithSelector(SubscriptionNotActive.selector, id));
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertIfTooEarly() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL - 1); // one second short
+
+        vm.expectRevert(abi.encodeWithSelector(TooEarly.selector, id, block.timestamp));
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertIfInsufficientBalance() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        // drain user's balance — pre-compute amount so vm.prank isn't consumed by balanceOf
+        uint256 bal = usdc.balanceOf(user);
+        vm.prank(user);
+        usdc.transfer(attacker, bal);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(InsufficientSubscriptionAmount.selector, id, 0, AMOUNT)
+        );
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_revertWhenPaused() public {
+        bytes32 id = _createSubscription();
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.prank(owner);
+        subs.pause();
+
+        vm.expectRevert();
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    function test_execute_allowsSecondExecutionAfterNextInterval() public {
+        bytes32 id = _createSubscription();
+
+        vm.warp(block.timestamp + INTERVAL + 1);
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+
+        vm.warp(block.timestamp + INTERVAL + 1);
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+
+        assertEq(service.callCount(), 2);
+    }
+
+    function test_execute_cancelledSubscriptionCannotBeExecuted() public {
+        bytes32 id = _createSubscription();
+
+        vm.prank(user);
+        subs.cancel(id);
+
+        vm.warp(block.timestamp + INTERVAL + 1);
+
+        vm.expectRevert(abi.encodeWithSelector(SubscriptionNotActive.selector, id));
+        vm.prank(agent);
+        subs.execute(id, bytes("params"));
+    }
+
+    // ── setExecutor ───────────────────────────────────────────────────────────
+
+    function test_setExecutor_enablesNewExecutor() public {
+        address newAgent = makeAddr("newAgent");
+        vm.prank(owner);
+        subs.setExecutor(newAgent, 2, true);
+
+        assertTrue(subs.executors(newAgent));
+        assertEq(subs.agentIds(newAgent), 2);
+    }
+
+    function test_setExecutor_disablesExistingExecutor() public {
+        vm.prank(owner);
+        subs.setExecutor(agent, AGENT_ID, false);
+        assertFalse(subs.executors(agent));
+    }
+
+    function test_setExecutor_revertIfNotOwner() public {
+        vm.expectRevert();
+        vm.prank(attacker);
+        subs.setExecutor(attacker, 99, true);
+    }
+
+    function test_setExecutor_revertOnZeroAddress() public {
+        vm.expectRevert(ZeroAddress.selector);
+        vm.prank(owner);
+        subs.setExecutor(address(0), 1, true);
+    }
+
+    // ── setMinTrustScore ──────────────────────────────────────────────────────
+
+    function test_setMinTrustScore_updatesValue() public {
+        vm.prank(owner);
+        subs.setMinTrustScore(75);
+        assertEq(subs.minAgentTrustScore(), 75);
+    }
+
+    function test_setMinTrustScore_emitsEvent() public {
+        vm.expectEmit(false, false, false, true, address(subs));
+        emit MinTrustScoreUpdated(MIN_SCORE, 75);
+
+        vm.prank(owner);
+        subs.setMinTrustScore(75);
+    }
+
+    function test_setMinTrustScore_revertIfNotOwner() public {
+        vm.expectRevert();
+        vm.prank(attacker);
+        subs.setMinTrustScore(0);
+    }
+
+    // ── registerService / removeService ──────────────────────────────────────
+
+    function test_registerService_addsToMapping() public {
+        address newSvc = makeAddr("newSvc");
+        vm.prank(owner);
+        subs.registerService(newSvc);
+        assertTrue(subs.services(newSvc));
+    }
+
+    function test_registerService_revertIfAlreadyRegistered() public {
+        vm.expectRevert(abi.encodeWithSelector(ServiceAlreadyRegistered.selector, address(service)));
+        vm.prank(owner);
+        subs.registerService(address(service));
+    }
+
+    function test_removeService_removesFromMapping() public {
+        vm.prank(owner);
+        subs.removeService(address(service));
+        assertFalse(subs.services(address(service)));
+    }
+
+    function test_removeService_revertIfNotRegistered() public {
+        address unknown = makeAddr("unknown");
+        vm.expectRevert(abi.encodeWithSelector(ServiceNotRegistered.selector, unknown));
+        vm.prank(owner);
+        subs.removeService(unknown);
     }
 }

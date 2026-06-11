@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import { AppProvider } from "@/lib/store";
+import Web3Provider from "@/components/Web3Provider";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import Modals from "@/components/Modals";
@@ -32,12 +33,14 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${spaceGrotesk.variable} ${jetbrainsMono.variable}`}>
       <body>
-        <AppProvider>
-          <Header />
-          <main className="main">{children}</main>
-          <Footer />
-          <Modals />
-        </AppProvider>
+        <Web3Provider>
+          <AppProvider>
+            <Header />
+            <main className="main">{children}</main>
+            <Footer />
+            <Modals />
+          </AppProvider>
+        </Web3Provider>
       </body>
     </html>
   );

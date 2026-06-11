@@ -1,60 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { agentById, WALLETS } from "@/lib/agents";
+import { formatMoney } from "@/lib/api/format";
 import { useApp, type Role } from "@/lib/store";
 
-function WalletModal() {
-  const {
-    walletModalOpen,
-    connecting,
-    closeWalletModal,
-    connectWallet,
-    cancelConnecting,
-  } = useApp();
-
-  if (!walletModalOpen) return null;
-
-  return (
-    <div className="overlay" onClick={closeWalletModal}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="kicker">{"// SIGN IN"}</div>
-        <div className="modal-title">Connect a wallet</div>
-
-        {connecting ? (
-          <div className="connecting">
-            <div className="spinner" />
-            <div className="connecting-name">waiting for {connecting.name}…</div>
-            <div className="connecting-hint">approve the connection in your wallet</div>
-            <button className="btn-ghost" onClick={cancelConnecting}>
-              cancel
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="wallet-opts">
-              {WALLETS.map((w) => (
-                <button key={w.id} className="wallet-opt" onClick={() => connectWallet(w)}>
-                  <div className="wallet-ic" style={{ background: w.bg }}>
-                    {w.ic}
-                  </div>
-                  <div className="wallet-opt-name">{w.name}</div>
-                  <div className="wallet-opt-arrow">→</div>
-                </button>
-              ))}
-            </div>
-            <div className="modal-footnote">
-              powered by rainbowkit · by connecting you agree to the <span>terms of use</span>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function OnboardModal() {
-  const { onboardOpen, wallet, finishOnboard } = useApp();
+  const { onboardOpen, onboardPending, wallet, finishOnboard } = useApp();
   const [handle, setHandle] = useState("");
   const [role, setRole] = useState<Role>("sub");
 
@@ -101,8 +52,12 @@ function OnboardModal() {
           </div>
         </div>
 
-        <button className="btn-enter" onClick={() => finishOnboard(handle, role)}>
-          enter daemon →
+        <button
+          className="btn-enter"
+          disabled={onboardPending}
+          onClick={() => finishOnboard(handle, role)}
+        >
+          {onboardPending ? "linking…" : "enter daemon →"}
         </button>
       </div>
     </div>
@@ -110,12 +65,10 @@ function OnboardModal() {
 }
 
 function SubscribeModal() {
-  const { pendingSub, wallet, closeSubModal, confirmSub } = useApp();
+  const { pendingSub, subscribePending, wallet, closeSubModal, confirmSub } = useApp();
 
   if (!pendingSub) return null;
-  const agent = agentById(pendingSub.agentId);
-  if (!agent) return null;
-  const plan = agent.plans[pendingSub.planIdx];
+  const priceLabel = formatMoney(pendingSub.price);
   const payMethod = wallet ? `usdc · ${wallet.addr}` : "usdc · wallet";
 
   return (
@@ -123,17 +76,17 @@ function SubscribeModal() {
       <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
         <div className="kicker">{"// CONFIRM SUBSCRIPTION"}</div>
         <div className="modal-title roomy">
-          {agent.name} · {plan.name}
+          {pendingSub.agentName} · {pendingSub.planName}
         </div>
         <div className="confirm-rows">
           <div className="confirm-row">
             <span className="k">price</span>
-            <span>${plan.price}/mo</span>
+            <span>{priceLabel}/mo</span>
           </div>
-          {plan.meter && (
+          {pendingSub.meter && (
             <div className="confirm-row">
               <span className="k">usage</span>
-              <span className="meter">{plan.meter}</span>
+              <span className="meter">{pendingSub.meter}</span>
             </div>
           )}
           <div className="confirm-row">
@@ -146,11 +99,11 @@ function SubscribeModal() {
           </div>
         </div>
         <div className="confirm-actions">
-          <button className="btn-cancel" onClick={closeSubModal}>
+          <button className="btn-cancel" onClick={closeSubModal} disabled={subscribePending}>
             cancel
           </button>
-          <button className="btn-confirm" onClick={confirmSub}>
-            confirm — ${plan.price}/mo
+          <button className="btn-confirm" onClick={confirmSub} disabled={subscribePending}>
+            {subscribePending ? "confirming…" : `confirm — ${priceLabel}/mo`}
           </button>
         </div>
       </div>
@@ -167,7 +120,6 @@ function Toast() {
 export default function Modals() {
   return (
     <>
-      <WalletModal />
       <OnboardModal />
       <SubscribeModal />
       <Toast />

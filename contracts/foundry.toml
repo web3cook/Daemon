@@ -2,14 +2,13 @@
 src    = "src"
 out    = "out"
 libs   = ["lib"]
-script = "script"
 via_ir = true
 fs_permissions = [{ access = "read-write", path = "./deployments/" }]
 
 [rpc_endpoints]
+arbitrum_one    = "${ARBITRUM_RPC_URL}"
 arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
 
 [etherscan]
 arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=421614" }
-
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+arbitrum_one     = { key = "${ARBISCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=42161" }

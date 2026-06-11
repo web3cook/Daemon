@@ -4,72 +4,89 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { agentById, WALLETS, type WalletDef } from "./agents";
+import { useAccount, useDisconnect } from "wagmi";
+import { useConnectModal } from "@rainbow-me/rainbowkit";
+import { shortenAddress } from "./wagmi";
+import { ApiError } from "./api/client";
+import { useCancelSubscription, useOnboard, useSubscribe } from "./api/hooks";
+import type { Money } from "./api/types";
 
 export type Role = "sub" | "cre";
 
 export interface Wallet {
+  /** Truncated display form, e.g. `0x7A3f…C9f2`. */
   addr: string;
+  /** Full checksummed address. */
+  address: string;
+  /** Connector name, e.g. "MetaMask". */
   name: string;
-}
-
-export interface PublishedAgent {
-  name: string;
-  av: string;
-  tag: string;
 }
 
 export interface PendingSub {
   agentId: string;
-  planIdx: number;
+  agentName: string;
+  planId: string;
+  planName: string;
+  price: Money;
+  meter: string;
 }
 
 interface AppState {
   wallet: Wallet | null;
-  walletModalOpen: boolean;
-  connecting: WalletDef | null;
   onboardOpen: boolean;
-  subs: Record<string, string>;
-  published: PublishedAgent[];
+  onboardPending: boolean;
   toast: string;
   pendingSub: PendingSub | null;
+  subscribePending: boolean;
   openWalletModal: () => void;
-  closeWalletModal: () => void;
-  connectWallet: (w: WalletDef) => void;
-  cancelConnecting: () => void;
   disconnectWallet: () => void;
   finishOnboard: (handle: string, role: Role) => void;
-  requestSubscribe: (agentId: string, planIdx: number) => void;
+  requestSubscribe: (sub: PendingSub) => void;
   closeSubModal: () => void;
   confirmSub: () => void;
-  cancelSub: (agentId: string) => void;
-  publishAgent: (agent: PublishedAgent) => void;
+  cancelSub: (subscriptionId: string, agentName: string) => void;
   showToast: (msg: string) => void;
 }
 
-const DEMO_ADDR = "0x7A3f…C9f2";
-
 const AppContext = createContext<AppState | null>(null);
+
+const onboardedKey = (address: string) => `daemon:onboarded:${address.toLowerCase()}`;
+
+function errMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError || e instanceof Error) return e.message;
+  return fallback;
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [walletModalOpen, setWalletModalOpen] = useState(false);
-  const [connecting, setConnecting] = useState<WalletDef | null>(null);
+  const { address, isConnected, connector } = useAccount();
+  const { disconnect } = useDisconnect();
+  const { openConnectModal } = useConnectModal();
+
+  const subscribeMut = useSubscribe();
+  const cancelMut = useCancelSubscription();
+  const onboardMut = useOnboard();
+
   const [onboardOpen, setOnboardOpen] = useState(false);
-  const [subs, setSubs] = useState<Record<string, string>>({ tidy: "standard" });
-  const [published, setPublished] = useState<PublishedAgent[]>([]);
   const [toast, setToast] = useState("");
   const [pendingSub, setPendingSub] = useState<PendingSub | null>(null);
-  const hasOnboarded = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const connectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const prevConnected = useRef(false);
+
+  const wallet = useMemo<Wallet | null>(
+    () =>
+      isConnected && address
+        ? { addr: shortenAddress(address), address, name: connector?.name ?? "wallet" }
+        : null,
+    [isConnected, address, connector],
+  );
 
   const showToast = useCallback((msg: string) => {
     clearTimeout(toastTimer.current);
@@ -77,65 +94,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toastTimer.current = setTimeout(() => setToast(""), 2600);
   }, []);
 
+  // When a wallet connects, run onboarding the first time we see this address,
+  // otherwise just confirm the connection. Persisted so reload/reconnect is quiet.
+  useEffect(() => {
+    const justConnected = isConnected && !prevConnected.current;
+    prevConnected.current = isConnected;
+    if (!justConnected || !address) return;
+
+    const seen =
+      typeof window !== "undefined" && localStorage.getItem(onboardedKey(address));
+    if (seen) {
+      showToast(`wallet connected · ${shortenAddress(address)}`);
+    } else {
+      setOnboardOpen(true);
+    }
+  }, [isConnected, address, showToast]);
+
   const openWalletModal = useCallback(() => {
-    setConnecting(null);
-    setWalletModalOpen(true);
-  }, []);
-
-  const closeWalletModal = useCallback(() => {
-    clearTimeout(connectTimer.current);
-    setConnecting(null);
-    setWalletModalOpen(false);
-  }, []);
-
-  const connectWallet = useCallback(
-    (w: WalletDef) => {
-      setConnecting(w);
-      clearTimeout(connectTimer.current);
-      connectTimer.current = setTimeout(() => {
-        const firstTime = !hasOnboarded.current;
-        setWallet({ addr: DEMO_ADDR, name: w.name });
-        setConnecting(null);
-        setWalletModalOpen(false);
-        if (firstTime) {
-          setOnboardOpen(true);
-        } else {
-          showToast(`wallet connected · ${DEMO_ADDR}`);
-        }
-      }, 1400);
-    },
-    [showToast],
-  );
-
-  const cancelConnecting = useCallback(() => {
-    clearTimeout(connectTimer.current);
-    setConnecting(null);
-  }, []);
+    openConnectModal?.();
+  }, [openConnectModal]);
 
   const disconnectWallet = useCallback(() => {
-    setWallet(null);
+    disconnect();
+    setOnboardOpen(false);
     showToast("wallet disconnected");
-  }, [showToast]);
+  }, [disconnect, showToast]);
 
   const finishOnboard = useCallback(
     (handle: string, role: Role) => {
-      hasOnboarded.current = true;
+      if (!address) return;
       const clean = handle.trim().replace(/^@/, "") || "anon";
-      setOnboardOpen(false);
-      router.push(role === "sub" ? "/" : "/creator");
-      showToast(`welcome, @${clean} — wallet linked`);
+      onboardMut.mutate(
+        { address, handle: clean, role: role === "sub" ? "subscriber" : "creator" },
+        {
+          onSuccess: () => {
+            if (typeof window !== "undefined") {
+              localStorage.setItem(onboardedKey(address), "1");
+            }
+            setOnboardOpen(false);
+            router.push(role === "sub" ? "/" : "/creator");
+            showToast(`welcome, @${clean} — wallet linked`);
+          },
+          onError: (e) => showToast(errMessage(e, "couldn’t complete onboarding")),
+        },
+      );
     },
-    [router, showToast],
+    [address, onboardMut, router, showToast],
   );
 
   const requestSubscribe = useCallback(
-    (agentId: string, planIdx: number) => {
+    (sub: PendingSub) => {
       if (!wallet) {
         openWalletModal();
         showToast("connect a wallet to subscribe");
         return;
       }
-      setPendingSub({ agentId, planIdx });
+      setPendingSub(sub);
     },
     [wallet, openWalletModal, showToast],
   );
@@ -143,81 +157,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const closeSubModal = useCallback(() => setPendingSub(null), []);
 
   const confirmSub = useCallback(() => {
-    if (!pendingSub) return;
-    const agent = agentById(pendingSub.agentId);
-    if (!agent) return;
-    const plan = agent.plans[pendingSub.planIdx];
-    setSubs((s) => ({ ...s, [agent.id]: plan.name }));
-    setPendingSub(null);
-    router.push("/subscriptions");
-    showToast(`Subscribed to ${agent.name} · ${plan.name}`);
-  }, [pendingSub, router, showToast]);
+    if (!pendingSub || !address) return;
+    subscribeMut.mutate(
+      { address, agentId: pendingSub.agentId, planId: pendingSub.planId },
+      {
+        onSuccess: () => {
+          const name = pendingSub.agentName;
+          const plan = pendingSub.planName;
+          setPendingSub(null);
+          router.push("/subscriptions");
+          showToast(`Subscribed to ${name} · ${plan}`);
+        },
+        onError: (e) => showToast(errMessage(e, "subscription failed")),
+      },
+    );
+  }, [pendingSub, address, subscribeMut, router, showToast]);
 
   const cancelSub = useCallback(
-    (agentId: string) => {
-      const agent = agentById(agentId);
-      setSubs((s) => {
-        const next = { ...s };
-        delete next[agentId];
-        return next;
-      });
-      showToast(`Cancelled ${agent?.name ?? agentId} — active until Jul 1`);
+    (subscriptionId: string, agentName: string) => {
+      if (!address) return;
+      cancelMut.mutate(
+        { subscriptionId, address },
+        {
+          onSuccess: () => showToast(`Cancelled ${agentName} — active until period end`),
+          onError: (e) => showToast(errMessage(e, "couldn’t cancel")),
+        },
+      );
     },
-    [showToast],
-  );
-
-  const publishAgent = useCallback(
-    (agent: PublishedAgent) => {
-      setPublished((p) => [...p, agent]);
-      router.push("/creator");
-      showToast(`${agent.name} is live in the marketplace`);
-    },
-    [router, showToast],
+    [address, cancelMut, showToast],
   );
 
   const value = useMemo<AppState>(
     () => ({
       wallet,
-      walletModalOpen,
-      connecting,
       onboardOpen,
-      subs,
-      published,
+      onboardPending: onboardMut.isPending,
       toast,
       pendingSub,
+      subscribePending: subscribeMut.isPending,
       openWalletModal,
-      closeWalletModal,
-      connectWallet,
-      cancelConnecting,
       disconnectWallet,
       finishOnboard,
       requestSubscribe,
       closeSubModal,
       confirmSub,
       cancelSub,
-      publishAgent,
       showToast,
     }),
     [
       wallet,
-      walletModalOpen,
-      connecting,
       onboardOpen,
-      subs,
-      published,
+      onboardMut.isPending,
       toast,
       pendingSub,
+      subscribeMut.isPending,
       openWalletModal,
-      closeWalletModal,
-      connectWallet,
-      cancelConnecting,
       disconnectWallet,
       finishOnboard,
       requestSubscribe,
       closeSubModal,
       confirmSub,
       cancelSub,
-      publishAgent,
       showToast,
     ],
   );
@@ -230,5 +230,3 @@ export function useApp(): AppState {
   if (!ctx) throw new Error("useApp must be used within AppProvider");
   return ctx;
 }
-
-export { WALLETS };
