@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 interface IPermit2 {
     struct PermitDetails {
@@ -15,12 +15,15 @@ interface IPermit2 {
         uint256       sigDeadline;
     }
 
+    /// @notice Approve the spender to transfer up to amount of token until expiration,
+    ///         verified against the EIP-712 signature.
     function permit(
         address               owner,
         PermitSingle calldata permitSingle,
         bytes        calldata signature
     ) external;
 
+    /// @notice Transfer token from `from` to `to` up to the caller's Permit2 allowance.
     function transferFrom(
         address from,
         address to,
