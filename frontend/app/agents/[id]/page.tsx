@@ -93,8 +93,10 @@ export default function AgentDetailPage() {
                         requestSubscribe({
                           agentId: agent.agent_id,
                           agentName: agent.name,
+                          serviceAddress: agent.service_address,
                           planId: p.plan_id,
                           planName: p.name,
+                          billingInterval: p.billing_interval,
                           price: p.base_price,
                           meter,
                         })

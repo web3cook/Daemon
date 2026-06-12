@@ -2,9 +2,33 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAccount, usePublicClient, useSwitchChain, useWriteContract } from "wagmi";
+import { parseEventLogs, parseUnits } from "viem";
 import { useRegisterAgent } from "@/lib/api/hooks";
 import { useApp } from "@/lib/store";
+import {
+  CONTRACT_CHAIN,
+  SERVICE_FACTORY_ADDRESS,
+  USDC_ADDRESS,
+  USDC_DECIMALS,
+  serviceFactoryAbi,
+} from "@/lib/contracts";
 import type { AgentCategory, PricingModel, RegisterAgentInput } from "@/lib/api/types";
+
+type TxPhase = "idle" | "switching" | "wallet" | "deploying";
+
+const PHASE_LABEL: Record<Exclude<TxPhase, "idle">, string> = {
+  switching: "switching network…",
+  wallet: "confirm in wallet…",
+  deploying: "deploying service…",
+};
+
+function errorMessage(e: unknown): string {
+  if (e && typeof e === "object" && "shortMessage" in e) {
+    return String((e as { shortMessage: unknown }).shortMessage);
+  }
+  return e instanceof Error ? e.message : "couldn’t publish agent";
+}
 
 interface RegForm {
   name: string;
@@ -47,8 +71,15 @@ export default function RegisterAgentPage() {
   const router = useRouter();
   const { wallet, openWalletModal, showToast } = useApp();
   const registerMut = useRegisterAgent();
+  const { chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: CONTRACT_CHAIN.id });
+  const [txPhase, setTxPhase] = useState<TxPhase>("idle");
   const [step, setStep] = useState(1);
   const [reg, setReg] = useState<RegForm>(INITIAL);
+
+  const publishing = txPhase !== "idle" || registerMut.isPending;
 
   const patch = (p: Partial<RegForm>) => setReg((r) => ({ ...r, ...p }));
 
@@ -74,14 +105,59 @@ export default function RegisterAgentPage() {
     { k: "PRICING", v: priceSummary },
   ];
 
-  const publish = () => {
+  const publish = async () => {
     if (!wallet) {
       openWalletModal();
       showToast("connect a wallet to publish");
       return;
     }
+    if (!SERVICE_FACTORY_ADDRESS || !USDC_ADDRESS) {
+      showToast("contract addresses not configured — set NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS");
+      return;
+    }
+
+    // 1. Deploy the agent's Service contract on-chain via ServiceFactory,
+    //    then 2. register the agent in the backend with the new address.
+    let serviceAddress: string;
+    try {
+      if (chainId !== CONTRACT_CHAIN.id) {
+        setTxPhase("switching");
+        await switchChainAsync({ chainId: CONTRACT_CHAIN.id });
+      }
+
+      setTxPhase("wallet");
+      const hash = await writeContractAsync({
+        abi: serviceFactoryAbi,
+        address: SERVICE_FACTORY_ADDRESS,
+        functionName: "createService",
+        chainId: CONTRACT_CHAIN.id,
+        args: [
+          wallet.address as `0x${string}`, // feeReceiver — creator's wallet
+          USDC_ADDRESS,
+          parseUnits(reg.price || "0", USDC_DECIMALS),
+        ],
+      });
+
+      setTxPhase("deploying");
+      if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const [created] = parseEventLogs({
+        abi: serviceFactoryAbi,
+        eventName: "ServiceCreated",
+        logs: receipt.logs,
+      });
+      if (!created) throw new Error("ServiceCreated event not found in receipt");
+      serviceAddress = created.args.service;
+    } catch (e) {
+      showToast(errorMessage(e));
+      return;
+    } finally {
+      setTxPhase("idle");
+    }
+
     const input: RegisterAgentInput = {
       user_address: wallet.address,
+      service_address: serviceAddress,
       name: reg.name.trim() || "Untitled agent",
       category: reg.cat,
       short_description: reg.desc,
@@ -105,7 +181,7 @@ export default function RegisterAgentPage() {
         router.push("/creator");
         showToast(`${data.agent.name} is live in the marketplace`);
       },
-      onError: (e) => showToast(e instanceof Error ? e.message : "couldn’t publish agent"),
+      onError: (e) => showToast(errorMessage(e)),
     });
   };
 
@@ -251,19 +327,21 @@ export default function RegisterAgentPage() {
 
       <div className="reg-actions">
         {step > 1 && (
-          <button className="btn-back" onClick={() => setStep(step - 1)} disabled={registerMut.isPending}>
+          <button className="btn-back" onClick={() => setStep(step - 1)} disabled={publishing}>
             ← back
           </button>
         )}
         <button
           className="btn-next"
-          disabled={registerMut.isPending}
+          disabled={publishing}
           onClick={() => (step === 3 ? publish() : setStep(step + 1))}
         >
           {step === 3
-            ? registerMut.isPending
-              ? "publishing…"
-              : "publish agent →"
+            ? txPhase !== "idle"
+              ? PHASE_LABEL[txPhase]
+              : registerMut.isPending
+                ? "publishing…"
+                : "publish agent →"
             : "continue →"}
         </button>
       </div>

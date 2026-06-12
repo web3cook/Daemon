@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sip
+      POSTGRES_PASSWORD: sip
+      POSTGRES_DB: sip_daemon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sip -d sip_daemon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      # Database
+      DATABASE_URL: postgres://sip:sip@postgres:5432/sip_daemon
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      API_PORT: "3001"
+      CORS_ORIGIN: http://localhost:3000
+      # Chain (Arbitrum Sepolia — used for USDC balance reads + payment intents)
+      RPC_URL: https://sepolia-rollup.arbitrum.io/rpc
+      CHAIN_ID: "421614"
+      PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001"
+      SUBSCRIPTIONS_ADDR: "0x102bA9E4Ad057EFE5233B77c09B6DBb2Df6fFa09"
+      VALIDATION_REGISTRY_ADDR: "0x4c5DdDF412c79c177566540C4Ab2AbBa6E3d1b54"
+      AGGREGATOR_ADDR: "0xC34AD1AaEfA81d82937452eb38842325D010984B"
+      USDC_ADDR: "0xB88f8299447FB6a28EF720Dea150f695953fdA11"
+      OUTPUT_TOKEN_ADDR: "0x2439Fbf1FEd2b48C94A949c56341f2eA26f2aad4"
+      MOCK_X402_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* values are baked into the bundle at build time —
+      # they must be build args, not runtime environment.
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:3001/api/v1
+        NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS: "0x40FE571c44cC8bcDBAa8510a0ca88c49efC7b3BE"
+        NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS: "0x102bA9E4Ad057EFE5233B77c09B6DBb2Df6fFa09"
+        NEXT_PUBLIC_USDC_ADDRESS: "0xB88f8299447FB6a28EF720Dea150f695953fdA11"
+        NEXT_PUBLIC_WC_PROJECT_ID: "a18b96e3dc8664c11e0c480c08f4149f"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

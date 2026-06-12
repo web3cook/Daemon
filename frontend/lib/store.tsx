@@ -13,10 +13,13 @@ import {
 import { useRouter } from "next/navigation";
 import { useAccount, useDisconnect } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
+import { parseUnits } from "viem";
 import { shortenAddress } from "./wagmi";
 import { ApiError } from "./api/client";
 import { useCancelSubscription, useOnboard, useSubscribe } from "./api/hooks";
-import type { Money } from "./api/types";
+import { USDC_DECIMALS, billingIntervalSeconds } from "./contracts";
+import { SUBSCRIBE_PHASE_LABEL, useSubscribeOnChain } from "./useSubscribeOnChain";
+import type { BillingInterval, Money } from "./api/types";
 
 export type Role = "sub" | "cre";
 
@@ -32,8 +35,11 @@ export interface Wallet {
 export interface PendingSub {
   agentId: string;
   agentName: string;
+  /** Agent's Service contract — target of the on-chain subscribe. */
+  serviceAddress: string;
   planId: string;
   planName: string;
+  billingInterval: BillingInterval;
   price: Money;
   meter: string;
 }
@@ -45,6 +51,8 @@ interface AppState {
   toast: string;
   pendingSub: PendingSub | null;
   subscribePending: boolean;
+  /** Progress label while the on-chain + backend subscribe flow runs. */
+  subscribePhase: string | null;
   openWalletModal: () => void;
   disconnectWallet: () => void;
   finishOnboard: (handle: string, role: Role) => void;
@@ -60,6 +68,10 @@ const AppContext = createContext<AppState | null>(null);
 const onboardedKey = (address: string) => `daemon:onboarded:${address.toLowerCase()}`;
 
 function errMessage(e: unknown, fallback: string): string {
+  // viem/wagmi errors carry a human-sized shortMessage; prefer it.
+  if (e && typeof e === "object" && "shortMessage" in e) {
+    return String((e as { shortMessage: unknown }).shortMessage);
+  }
   if (e instanceof ApiError || e instanceof Error) return e.message;
   return fallback;
 }
@@ -73,6 +85,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const subscribeMut = useSubscribe();
   const cancelMut = useCancelSubscription();
   const onboardMut = useOnboard();
+  const { subscribeOnChain, phase: txPhase } = useSubscribeOnChain();
 
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -156,10 +169,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const closeSubModal = useCallback(() => setPendingSub(null), []);
 
-  const confirmSub = useCallback(() => {
+  const confirmSub = useCallback(async () => {
     if (!pendingSub || !address) return;
+
+    // 1. On-chain: approve USDC → sign Permit2 → Subscriptions.subscribe().
+    let subscriptionId: string;
+    let txHash: string;
+    try {
+      const onchain = await subscribeOnChain(
+        pendingSub.serviceAddress as `0x${string}`,
+        parseUnits(pendingSub.price.amount, USDC_DECIMALS),
+        billingIntervalSeconds(pendingSub.billingInterval),
+      );
+      subscriptionId = onchain.subscriptionId;
+      txHash = onchain.txHash;
+    } catch (e) {
+      showToast(errMessage(e, "subscription failed"));
+      return;
+    }
+
+    // 2. Backend: record the subscription with its on-chain id.
     subscribeMut.mutate(
-      { address, agentId: pendingSub.agentId, planId: pendingSub.planId },
+      {
+        address,
+        agentId: pendingSub.agentId,
+        planId: pendingSub.planId,
+        subscriptionId,
+        txHash,
+      },
       {
         onSuccess: () => {
           const name = pendingSub.agentName;
@@ -171,7 +208,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         onError: (e) => showToast(errMessage(e, "subscription failed")),
       },
     );
-  }, [pendingSub, address, subscribeMut, router, showToast]);
+  }, [pendingSub, address, subscribeOnChain, subscribeMut, router, showToast]);
 
   const cancelSub = useCallback(
     (subscriptionId: string, agentName: string) => {
@@ -187,6 +224,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [address, cancelMut, showToast],
   );
 
+  const subscribePhase =
+    txPhase !== "idle"
+      ? SUBSCRIBE_PHASE_LABEL[txPhase]
+      : subscribeMut.isPending
+        ? "saving subscription…"
+        : null;
+
   const value = useMemo<AppState>(
     () => ({
       wallet,
@@ -194,7 +238,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       onboardPending: onboardMut.isPending,
       toast,
       pendingSub,
-      subscribePending: subscribeMut.isPending,
+      subscribePending: subscribePhase !== null,
+      subscribePhase,
       openWalletModal,
       disconnectWallet,
       finishOnboard,
@@ -210,7 +255,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       onboardMut.isPending,
       toast,
       pendingSub,
-      subscribeMut.isPending,
+      subscribePhase,
       openWalletModal,
       disconnectWallet,
       finishOnboard,

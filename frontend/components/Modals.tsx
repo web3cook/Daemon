@@ -65,7 +65,8 @@ function OnboardModal() {
 }
 
 function SubscribeModal() {
-  const { pendingSub, subscribePending, wallet, closeSubModal, confirmSub } = useApp();
+  const { pendingSub, subscribePending, subscribePhase, wallet, closeSubModal, confirmSub } =
+    useApp();
 
   if (!pendingSub) return null;
   const priceLabel = formatMoney(pendingSub.price);
@@ -103,7 +104,7 @@ function SubscribeModal() {
             cancel
           </button>
           <button className="btn-confirm" onClick={confirmSub} disabled={subscribePending}>
-            {subscribePending ? "confirming…" : `confirm — ${priceLabel}/mo`}
+            {subscribePhase ?? `confirm — ${priceLabel}/mo`}
           </button>
         </div>
       </div>

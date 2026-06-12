@@ -133,7 +133,8 @@ contract Subscribe is Script {
             spendPerCycle,
             intervalSecs,
             permit,
-            sig
+            sig,
+            bytes("") // extra service params — SIPService accepts any
         );
         vm.stopBroadcast();
 

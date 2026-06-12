@@ -128,6 +128,7 @@ sort_option          = "popular" | "rating" | "price_asc" | "price_desc" | "newe
 ```json
 {
   "agent_id": "agt_01HXX",
+  "service_address": "0x1Bc28F7a…44D1",
   "name": "Pulse",
   "icon": "https://cdn.daemonagents.com/agents/pulse/icon.png",
   "logo": "https://cdn.daemonagents.com/agents/pulse/logo.png",
@@ -145,6 +146,10 @@ sort_option          = "popular" | "rating" | "price_asc" | "price_desc" | "newe
   "created_at": "2026-06-01T00:00:00Z"
 }
 ```
+
+`service_address` is the agent's Service contract (deployed at registration via
+ServiceFactory — see §6.2). The frontend targets it when calling
+`Subscriptions.subscribe()` on-chain.
 
 ### 2.3 `agent_detail` (= `agent` + the fields below)
 
@@ -438,7 +443,13 @@ Output:
 
 ### 5.2 `POST /subscriptions` (create)
 
-For recurring plans the backend returns the on-chain payment intent the wallet must confirm; for `one_time` plans use the x402 flow (§7).
+Before calling this endpoint the frontend completes the on-chain subscribe
+against the agent's Service contract: approve USDC to Permit2 → sign a Permit2
+`PermitSingle` → `Subscriptions.subscribe(service, usdc, amountPerCycle,
+interval, permitSingle, signature, params)`. `subscription_id` is the `bytes32
+id` from the `SubscriptionCreated` event and `tx_hash` is the subscribe
+transaction. The backend should verify the subscription exists on-chain
+(`Subscriptions.getSubscription(subscription_id)`) before recording it.
 
 Input:
 
@@ -446,7 +457,9 @@ Input:
 {
   "user_address": "0x7A3f9c4E…C9f2",
   "agent_id": "agt_01HXX",
-  "plan_id": "pln_01HXX"
+  "plan_id": "pln_01HXX",
+  "subscription_id": "0x9c4e7a3f…b2d1",
+  "tx_hash": "0x5f1e8c09…77aa"
 }
 ```
 
@@ -629,11 +642,18 @@ Output:
 
 ### 6.2 `POST /creator/agents/register` (3-step form submits once)
 
+Before calling this endpoint the frontend deploys the agent's Service contract
+on Arbitrum Sepolia via `ServiceFactory.createService(feeReceiver, spendToken, amount)`
+and reads the new contract address from the `ServiceCreated` event.
+`service_address` is that deployed contract — the backend should verify it via
+`ServiceFactory.isFactoryService(service_address)` and store it with the agent.
+
 Input:
 
 ```json
 {
   "user_address": "0x7A3f9c4E…C9f2",
+  "service_address": "0x1Bc28F7a…44D1",
   "name": "Nightwatch",
   "category": "engineering",
   "short_description": "Watches your endpoints overnight and files incident reports.",
