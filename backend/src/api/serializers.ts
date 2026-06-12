@@ -43,6 +43,7 @@ export function serializeSubscription(row: SubscriptionJoinRow): object {
 
 export interface AgentRow {
   agent_id: string
+  slug: string
   name: string
   icon: string | null
   logo: string | null
@@ -60,6 +61,10 @@ export interface AgentRow {
   created_at: Date
   from_price_amount?: string | null
   from_price_currency?: string | null
+  onchain: boolean
+  erc8004_agent_id: number | null
+  agent_eoa: string | null
+  trust_score: number | null
 }
 
 export function serializeAgentCard(row: AgentRow): object {
@@ -82,6 +87,15 @@ export function serializeAgentCard(row: AgentRow): object {
       : null,
     status: row.status,
     created_at: row.created_at.toISOString(),
+    onchain: row.onchain,
+    agent_card: row.onchain
+      ? {
+          erc8004_agent_id: row.erc8004_agent_id,
+          trust_score: row.trust_score,
+          x402_payment_address: row.agent_eoa,
+          agent_card_uri: `https://daemon.example.com/.well-known/agents/${row.slug}.json`,
+        }
+      : null,
   }
 }
 

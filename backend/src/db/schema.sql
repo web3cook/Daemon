@@ -96,9 +96,14 @@ CREATE TABLE IF NOT EXISTS payouts (
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS base_subscriber_count INT NOT NULL DEFAULT 0;
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS usage_count INT NOT NULL DEFAULT 0;
 
+-- ERC-8004 identity linkage (set for agents registered on-chain, e.g. Pulse, Clerk)
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS erc8004_agent_id INT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_eoa TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS trust_score INT;
+
 DO $$ BEGIN
   ALTER TABLE plans ADD CONSTRAINT plans_agent_id_name_key UNIQUE (agent_id, name);
-EXCEPTION WHEN duplicate_object THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);

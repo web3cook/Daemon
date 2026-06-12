@@ -1,5 +1,9 @@
 {
   "agentId": 1,
+  "agents": {
+    "pulse": { "agentId": 1, "agentCardURI": "https://sip.example.com/.well-known/agent.json", "trustScore": 80, "eoa": "0xF96dD19c97906bEFF9f3A94002ae9bB7b4c0b034" },
+    "clerk": { "agentId": 2, "agentCardURI": "https://daemon.example.com/.well-known/agents/clerk.json", "trustScore": 80, "eoa": "0xF96dD19c97906bEFF9f3A94002ae9bB7b4c0b034" }
+  },
   "aggregator": "0xC34AD1AaEfA81d82937452eb38842325D010984B",
   "identityRegistry": "0xb6b309ebB91e9854A16Dba7AC326cAe166fEB629",
   "mockUSDC": "0xB88f8299447FB6a28EF720Dea150f695953fdA11",

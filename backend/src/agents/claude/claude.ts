@@ -1,6 +1,6 @@
 import Anthropic                from '@anthropic-ai/sdk'
-import { logger }              from '../logger.js'
-import { ClaudeResponseError } from '../errors.js'
+import { logger }              from '../../logger.js'
+import { ClaudeResponseError } from '../../errors.js'
 
 // PRD §3.1 — agent intelligence is scoped to execution safety checks only.
 // Timing and amounts are fixed on-chain and must never be overridden here.

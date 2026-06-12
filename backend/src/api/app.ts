@@ -5,6 +5,7 @@ import { userRouter } from './routes/user.js'
 import { marketplaceRouter } from './routes/marketplace.js'
 import { subscriptionsRouter } from './routes/subscriptions.js'
 import { creatorRouter } from './routes/creator.js'
+import { wellKnownRouter } from './routes/wellknown.js'
 
 export function buildApp(): express.Express {
   const app = express()
@@ -23,6 +24,7 @@ export function buildApp(): express.Express {
   v1.use('/creator', creatorRouter)
 
   app.use('/api/v1', v1)
+  app.use('/.well-known', wellKnownRouter)
 
   return app
 }

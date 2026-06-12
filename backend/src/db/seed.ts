@@ -27,7 +27,12 @@ interface SeedAgent {
   onchain: boolean
   usage_label: string
   plans: SeedPlan[]
+  erc8004_agent_id?: number
+  agent_eoa?: string
+  trust_score?: number
 }
+
+const AGENT_EOA = '0xF96dD19c97906bEFF9f3A94002ae9bB7b4c0b034'
 
 const CDN = 'https://cdn.daemonagents.com/agents'
 
@@ -53,6 +58,9 @@ const AGENTS: SeedAgent[] = [
       { name: 'starter', billing_interval: 'monthly', base_price: 19, description: '1 portfolio · weekly buys · email summaries' },
       { name: 'pro', billing_interval: 'monthly', base_price: 49, description: '5 portfolios · daily buys · auto-rebalancing · priority runs' },
     ],
+    erc8004_agent_id: 1,
+    agent_eoa: AGENT_EOA,
+    trust_score: 80,
   },
   {
     slug: 'tidy',
@@ -110,12 +118,15 @@ const AGENTS: SeedAgent[] = [
     base_subscriber_count: 640,
     publisher_name: 'Quietbooks',
     pricing_model: 'usage',
-    onchain: false,
+    onchain: true,
     usage_label: 'transactions processed',
     plans: [
       { name: 'metered', billing_interval: 'monthly', base_price: 9, usage_price: 0.04, usage_unit: 'transaction', description: 'Pay for what it processes · monthly close included' },
       { name: 'flat', billing_interval: 'monthly', base_price: 79, description: 'Unlimited transactions · quarterly review call' },
     ],
+    erc8004_agent_id: 2,
+    agent_eoa: AGENT_EOA,
+    trust_score: 80,
   },
   {
     slug: 'scribe',
@@ -172,13 +183,15 @@ async function main(): Promise<void> {
       await query(
         `UPDATE agents SET name=$2, icon=$3, logo=$4, category=$5, tagline=$6, short_description=$7,
                 description=$8, services=$9, rating=$10, rating_count=$11, publisher_name=$12,
-                pricing_model=$13, onchain=$14, usage_label=$15, base_subscriber_count=$16
+                pricing_model=$13, onchain=$14, usage_label=$15, base_subscriber_count=$16,
+                erc8004_agent_id=$17, agent_eoa=$18, trust_score=$19
          WHERE agent_id=$1`,
         [
           agentId, agent.name, `${CDN}/${agent.slug}/icon.png`, `${CDN}/${agent.slug}/logo.png`,
           agent.category, agent.tagline, agent.short_description, agent.description, agent.services,
           agent.rating, agent.rating_count, agent.publisher_name, agent.pricing_model, agent.onchain,
           agent.usage_label, agent.base_subscriber_count,
+          agent.erc8004_agent_id ?? null, agent.agent_eoa ?? null, agent.trust_score ?? null,
         ],
       )
     } else {
@@ -186,13 +199,15 @@ async function main(): Promise<void> {
       await query(
         `INSERT INTO agents (agent_id, slug, name, icon, logo, category, tagline, short_description,
                               description, services, rating, rating_count, publisher_name,
-                              pricing_model, status, onchain, usage_label, base_subscriber_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'live',$15,$16,$17)`,
+                              pricing_model, status, onchain, usage_label, base_subscriber_count,
+                              erc8004_agent_id, agent_eoa, trust_score)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'live',$15,$16,$17,$18,$19,$20)`,
         [
           agentId, agent.slug, agent.name, `${CDN}/${agent.slug}/icon.png`, `${CDN}/${agent.slug}/logo.png`,
           agent.category, agent.tagline, agent.short_description, agent.description, agent.services,
           agent.rating, agent.rating_count, agent.publisher_name, agent.pricing_model, agent.onchain,
           agent.usage_label, agent.base_subscriber_count,
+          agent.erc8004_agent_id ?? null, agent.agent_eoa ?? null, agent.trust_score ?? null,
         ],
       )
       logger.info({ slug: agent.slug, agentId }, 'agent seeded')

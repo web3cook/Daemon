@@ -3,6 +3,8 @@ import { query } from '../../db/pool.js'
 import { ok, fail, money } from '../response.js'
 import { newInvocationId } from '../ids.js'
 import { serializeAgentCard, serializePlan, type AgentRow, type PlanRow } from '../serializers.js'
+import { ClerkAgent, type CategorizeInput } from '../../agents/clerk/categorize.js'
+import { config } from '../../config.js'
 
 export const marketplaceRouter = Router()
 
@@ -130,13 +132,17 @@ marketplaceRouter.get('/:agent_id', async (req, res) => {
   ok(res, 200, 'Data fetched successfully', { agent: card })
 })
 
-// POST /agents/:agent_id/invoke — x402 one-time/usage flow stub (§7, phase 2)
+// POST /agents/:agent_id/invoke — x402 one-time/usage flow (§7)
 marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
   const { agent_id } = req.params
   const paymentHeader = req.header('X-Payment')
 
-  const agentRes = await query<{ agent_id: string }>('SELECT agent_id FROM agents WHERE agent_id = $1', [agent_id])
-  if (agentRes.rows.length === 0) {
+  const agentRes = await query<{ agent_id: string; slug: string; agent_eoa: string | null; onchain: boolean }>(
+    'SELECT agent_id, slug, agent_eoa, onchain FROM agents WHERE agent_id = $1',
+    [agent_id],
+  )
+  const agent = agentRes.rows[0]
+  if (!agent) {
     fail(res, 404, 'Agent not found', {})
     return
   }
@@ -145,12 +151,37 @@ marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
     fail(res, 402, 'Payment required to invoke this service', {
       payment_requirements: {
         scheme: 'exact',
-        network: 'stellar',
+        network: agent.onchain ? 'arbitrum-sepolia' : 'stellar',
         amount: money('0.50'),
-        pay_to: 'GDAEMON…XLM',
+        pay_to: agent.onchain ? agent.agent_eoa : 'GDAEMON…XLM',
         memo: newInvocationId(),
         expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
       },
+    })
+    return
+  }
+
+  // Clerk (agentId 2): real Claude-powered transaction categorization
+  if (agent.slug === 'clerk') {
+    const body = req.body as CategorizeInput | undefined
+    if (!body?.description) {
+      fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { description: 'required' } })
+      return
+    }
+
+    if (!config.anthropicApiKey) {
+      fail(res, 503, 'Categorization service unavailable', {})
+      return
+    }
+
+    const clerk = new ClerkAgent(config.anthropicApiKey)
+    const result = await clerk.categorize(body)
+
+    ok(res, 200, 'Service invoked', {
+      invocation_id: newInvocationId(),
+      status: 'completed',
+      output: result,
+      receipt: { tx_hash: 'arbitrum-sepolia:x402-mock', settled_at: new Date().toISOString() },
     })
     return
   }
