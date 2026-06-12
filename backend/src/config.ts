@@ -37,11 +37,16 @@ export const config = {
   indexerStartBlock: BigInt(optionalEnv('INDEXER_START_BLOCK', '0')),
   indexerPollMs:     parseInt(optionalEnv('INDEXER_POLL_SECS', '20')) * 1000,
 
-  // x402
-  mockX402Enabled: optionalEnv('MOCK_X402_ENABLED', 'true') === 'true',
-  mockX402Port:    mockPort,
-  x402PriceUrl:    optionalEnv('X402_PRICE_URL',   `http://localhost:${mockPort}/price`),
-  x402RoutingUrl:  optionalEnv('X402_ROUTING_URL', `http://localhost:${mockPort}/route`),
+  // x402 — real "exact" scheme (EIP-3009) settled via a public facilitator.
+  // The x402 payment asset must support transferWithAuthorization; this is
+  // Circle's official testnet USDC on Arbitrum Sepolia (NOT the same as
+  // USDC_ADDR, which is the mock spend token used by Subscriptions.sol).
+  mockX402Enabled:    optionalEnv('MOCK_X402_ENABLED', 'true') === 'true',
+  mockX402Port:       mockPort,
+  x402PriceUrl:       optionalEnv('X402_PRICE_URL',   `http://localhost:${mockPort}/price`),
+  x402RoutingUrl:     optionalEnv('X402_ROUTING_URL', `http://localhost:${mockPort}/route`),
+  x402AssetAddr:      optionalEnv('X402_ASSET_ADDR', '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d'),
+  x402FacilitatorUrl: optionalEnv('X402_FACILITATOR_URL', 'https://facilitator.x402.rs'),
 
   // Gas ceiling (PRD §9.1): skip execution if Arbitrum gas exceeds this value
   maxGasGwei: parseFloat(optionalEnv('MAX_GAS_GWEI', '0.1')),

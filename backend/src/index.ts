@@ -23,25 +23,27 @@ process.on('unhandledRejection', (reason: unknown) => {
 })
 
 async function main(): Promise<void> {
-  const chain = config.chainId === 421614 ? 'arbitrum-sepolia' : 'arbitrum-one'
+  // CAIP-2 chain identifier — x402 protocol v2 network format (e.g. "eip155:421614").
+  const x402Network = `eip155:${config.chainId}`
 
   // ── Chain clients ──────────────────────────────────────────────────────────
   const clients = buildClients(config.rpcUrl, config.chainId, config.privateKey)
   logger.info({ chainId: config.chainId, address: clients.account.address }, 'chain connected')
 
-  // ── Mock x402 server ───────────────────────────────────────────────────────
+  // ── x402 resource server (price/routing endpoints the agent pays for) ──────
   if (config.mockX402Enabled) {
     startMockX402Server(
       config.mockX402Port,
-      config.usdcAddr,
+      config.x402AssetAddr,
       clients.account.address,
-      chain,
+      x402Network,
+      config.x402FacilitatorUrl,
       config.coincapKey,
     )
   }
 
   // ── x402 + Claude ──────────────────────────────────────────────────────────
-  const x402Client = new X402Client(clients.account.address, chain)
+  const x402Client = new X402Client(clients.account, x402Network)
   const claude     = config.anthropicApiKey ? new ClaudeAgent(config.anthropicApiKey) : null
   logger.info({ claudeEnabled: claude !== null }, 'safety oracle initialised')
 
