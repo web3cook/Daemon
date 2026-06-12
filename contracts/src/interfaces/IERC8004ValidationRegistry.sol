@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 
 interface IERC8004ValidationRegistry {
     /// @notice Emitted when a validator posts a new score for an agent.

@@ -5,7 +5,7 @@ import { withRetry }                        from '../utils/retry.js'
 import { SubscriptionsABI, ValidationRegistryABI } from '../contracts/index.js'
 import type { Clients }     from '../chain/client.js'
 import type { X402Client }  from '../x402/client.js'
-import type { ClaudeAgent } from '../agent/claude.js'
+import type { ClaudeAgent } from '../agents/claude/claude.js'
 import { config }           from '../config.js'
 
 // Reflects the deployed Subscription struct (Subscriptions.sol) — all
