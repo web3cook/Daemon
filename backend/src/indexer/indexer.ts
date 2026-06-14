@@ -103,6 +103,8 @@ export class Indexer {
     )
     const serviceAddresses = agentsRes.rows.map(r => r.service_address as Address).filter(Boolean)
 
+    logger.info({ fromBlock: from, toBlock: to, latest, blocksToCatchUp: to - from + 1n }, 'indexer sync starting')
+
     for (let chunk = from; chunk <= to; chunk += CHUNK) {
       const end = chunk + CHUNK - 1n < to ? chunk + CHUNK - 1n : to
 
@@ -348,17 +350,20 @@ export class Indexer {
           logger.error({ err, agentId: agentId.toString() }, 'error processing ScoreUpdated event')
         }
       }
-    }
 
-    this.lastBlock = to
-    try {
-      await query(
-        `INSERT INTO system_constants (key, value) VALUES ($1, $2)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-        ['last_processed_block', to.toString()]
-      )
-    } catch (err) {
-      logger.error({ err, block: to }, 'failed to save last processed block to database')
+      // Checkpoint after every chunk so progress survives a restart, and log
+      // how far behind the chain head the indexer still is.
+      this.lastBlock = end
+      try {
+        await query(
+          `INSERT INTO system_constants (key, value) VALUES ($1, $2)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+          ['last_processed_block', end.toString()]
+        )
+      } catch (err) {
+        logger.error({ err, block: end }, 'failed to save last processed block to database')
+      }
+      logger.info({ indexedTo: end, latest, remaining: latest - end }, 'indexer chunk processed')
     }
   }
 }

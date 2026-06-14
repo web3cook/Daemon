@@ -12,8 +12,5 @@ done
 echo "Running migrations..."
 npm run db:migrate
 
-echo "Seeding database..."
-npm run db:seed
-
 echo "Starting API server..."
 exec "$@"

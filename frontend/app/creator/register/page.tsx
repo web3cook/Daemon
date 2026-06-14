@@ -6,6 +6,7 @@ import { useAccount, usePublicClient, useSwitchChain, useWriteContract } from "w
 import { parseEventLogs, parseUnits } from "viem";
 import { useRegisterAgent } from "@/lib/api/hooks";
 import { useApp } from "@/lib/store";
+import { getGasFees } from "@/lib/gas";
 import {
   CONTRACT_CHAIN,
   SERVICE_FACTORY_ADDRESS,
@@ -37,6 +38,8 @@ function errorMessage(e: unknown): string {
   }
   return e instanceof Error ? e.message : "couldn’t publish agent";
 }
+
+type FieldError = "name" | "desc" | "endpoint" | "services" | "subPrice" | "oneTimePrice";
 
 interface ParamDraft {
   label: string;
@@ -122,12 +125,22 @@ export default function RegisterAgentPage() {
   const [txPhase, setTxPhase] = useState<TxPhase>("idle");
   const [step, setStep] = useState(1);
   const [reg, setReg] = useState<RegForm>(INITIAL);
+  const [errors, setErrors] = useState<Partial<Record<FieldError, string>>>({});
 
   const publishing = txPhase !== "idle" || registerMut.isPending;
   const hasSub = reg.mode !== "one_time";
   const hasOneTime = reg.mode !== "subscription";
 
-  const patch = (p: Partial<RegForm>) => setReg((r) => ({ ...r, ...p }));
+  const patch = (p: Partial<RegForm>) => {
+    setReg((r) => ({ ...r, ...p }));
+    setErrors((e) => {
+      const next = { ...e };
+      for (const key of Object.keys(p) as (keyof RegForm)[]) {
+        delete next[key as FieldError];
+      }
+      return next;
+    });
+  };
 
   const chips = reg.services
     .split(",")
@@ -135,6 +148,30 @@ export default function RegisterAgentPage() {
     .filter(Boolean);
 
   const cleanParams = reg.params.filter((p) => p.label.trim());
+
+  const validateStep1 = (): Partial<Record<FieldError, string>> => {
+    const next: Partial<Record<FieldError, string>> = {};
+    if (!reg.name.trim()) next.name = "an agent name is required";
+    if (!reg.desc.trim()) next.desc = "a description is required";
+    if (!reg.endpoint.trim()) {
+      next.endpoint = "an agent endpoint URL is required";
+    } else {
+      try {
+        new URL(reg.endpoint.trim());
+      } catch {
+        next.endpoint = "must be a valid URL, e.g. https://your-agent.example.com";
+      }
+    }
+    return next;
+  };
+
+  const validateStep2 = (): Partial<Record<FieldError, string>> => {
+    const next: Partial<Record<FieldError, string>> = {};
+    if (chips.length === 0) next.services = "at least one service tag is required";
+    if (hasSub && !(Number(reg.subPrice) > 0)) next.subPrice = "must be greater than 0";
+    if (hasOneTime && !(Number(reg.oneTimePrice) > 0)) next.oneTimePrice = "must be greater than 0";
+    return next;
+  };
 
   const addParam = () =>
     setReg((r) => ({ ...r, params: [...r.params, { label: "", type: "text", required: true }] }));
@@ -180,8 +217,11 @@ export default function RegisterAgentPage() {
       showToast("contract addresses not configured: set NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS");
       return;
     }
-    if (!reg.endpoint.trim()) {
-      showToast("an agent endpoint URL is required");
+    const step1Errors = validateStep1();
+    const step2Errors = validateStep2();
+    if (Object.keys(step1Errors).length > 0 || Object.keys(step2Errors).length > 0) {
+      setErrors({ ...step1Errors, ...step2Errors });
+      setStep(Object.keys(step1Errors).length > 0 ? 1 : 2);
       return;
     }
 
@@ -200,12 +240,14 @@ export default function RegisterAgentPage() {
       if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
 
       setTxPhase("wallet");
+      const gasFees = await getGasFees(publicClient);
       if (hasSub) {
         const hash = await writeContractAsync({
           abi: serviceFactoryAbi,
           address: SERVICE_FACTORY_ADDRESS,
           functionName: "createService",
           chainId: CONTRACT_CHAIN.id,
+          ...gasFees,
           args: [
             wallet.address as `0x${string}`, // feeReceiver: creator's wallet
             USDC_ADDRESS,
@@ -230,6 +272,7 @@ export default function RegisterAgentPage() {
           address: SERVICE_FACTORY_ADDRESS,
           functionName: "registerAgent",
           chainId: CONTRACT_CHAIN.id,
+          ...gasFees,
           args: [agentCardURI],
         });
         setTxPhase("deploying");
@@ -318,11 +361,12 @@ export default function RegisterAgentPage() {
           <div className="field">
             <label className="field-label">AGENT NAME</label>
             <input
-              className="input"
+              className={`input${errors.name ? " has-error" : ""}`}
               value={reg.name}
               onChange={(e) => patch({ name: e.target.value })}
               placeholder="e.g. Nightwatch"
             />
+            {errors.name && <div className="field-error">{errors.name}</div>}
           </div>
           <div className="field">
             <label className="field-label">CATEGORY</label>
@@ -343,11 +387,12 @@ export default function RegisterAgentPage() {
               AGENT ENDPOINT URL <span className="hint">(the HTTP service that does the work)</span>
             </label>
             <input
-              className="input"
+              className={`input${errors.endpoint ? " has-error" : ""}`}
               value={reg.endpoint}
               onChange={(e) => patch({ endpoint: e.target.value })}
               placeholder="https://your-agent.example.com/run"
             />
+            {errors.endpoint && <div className="field-error">{errors.endpoint}</div>}
           </div>
           <div className="field">
             <label className="field-label">
@@ -355,12 +400,13 @@ export default function RegisterAgentPage() {
               <span className="hint">(we’ll generate a short card blurb from this)</span>
             </label>
             <textarea
-              className="input"
+              className={`input${errors.desc ? " has-error" : ""}`}
               rows={4}
               value={reg.desc}
               onChange={(e) => patch({ desc: e.target.value })}
               placeholder="Describe what your agent does, in as much detail as you like."
             />
+            {errors.desc && <div className="field-error">{errors.desc}</div>}
           </div>
         </div>
       )}
@@ -372,11 +418,12 @@ export default function RegisterAgentPage() {
               SERVICES OFFERED <span className="hint">(comma-separated)</span>
             </label>
             <input
-              className="input"
+              className={`input${errors.services ? " has-error" : ""}`}
               value={reg.services}
               onChange={(e) => patch({ services: e.target.value })}
               placeholder="e.g. uptime checks, alerting, weekly report"
             />
+            {errors.services && <div className="field-error">{errors.services}</div>}
             {chips.length > 0 && (
               <div className="chip-row reg-chips">
                 {chips.map((ch) => (
@@ -433,20 +480,22 @@ export default function RegisterAgentPage() {
                   SUBSCRIPTION PRICE ($/{reg.freq === "weekly" ? "WK" : "MO"})
                 </label>
                 <input
-                  className="input mono-input"
+                  className={`input mono-input${errors.subPrice ? " has-error" : ""}`}
                   value={reg.subPrice}
                   onChange={(e) => patch({ subPrice: e.target.value })}
                 />
+                {errors.subPrice && <div className="field-error">{errors.subPrice}</div>}
               </div>
             )}
             {hasOneTime && (
               <div className="field">
                 <label className="field-label">ONE-TIME PRICE ($/RUN)</label>
                 <input
-                  className="input mono-input"
+                  className={`input mono-input${errors.oneTimePrice ? " has-error" : ""}`}
                   value={reg.oneTimePrice}
                   onChange={(e) => patch({ oneTimePrice: e.target.value })}
                 />
+                {errors.oneTimePrice && <div className="field-error">{errors.oneTimePrice}</div>}
               </div>
             )}
           </div>
@@ -528,7 +577,18 @@ export default function RegisterAgentPage() {
         <button
           className="btn-next"
           disabled={publishing}
-          onClick={() => (step === 3 ? publish() : setStep(step + 1))}
+          onClick={() => {
+            if (step === 3) {
+              publish();
+              return;
+            }
+            const stepErrors = step === 1 ? validateStep1() : validateStep2();
+            if (Object.keys(stepErrors).length > 0) {
+              setErrors(stepErrors);
+              return;
+            }
+            setStep(step + 1);
+          }}
         >
           {step === 3
             ? txPhase !== "idle"

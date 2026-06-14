@@ -1,4 +1,5 @@
 import { apiGet, apiPost, type QueryParams } from "./client";
+import { billingIntervalSeconds } from "../contracts";
 import type {
   AgentDetailDetails,
   AgentListDetails,
@@ -159,7 +160,14 @@ export function listCreatorAgents(userAddress: string) {
 }
 
 export function registerAgent(input: RegisterAgentInput) {
-  return apiPost<AgentMutationDetails>("/creator/agents/register", input);
+  const { sub_price, one_time_price, payment_frequency, ...rest } = input;
+  return apiPost<AgentMutationDetails>("/creator/agents/register", {
+    ...rest,
+    sub_price_amount: sub_price?.amount ?? null,
+    one_time_price_amount: one_time_price?.amount ?? null,
+    payment_frequency,
+    interval_seconds: payment_frequency ? billingIntervalSeconds(payment_frequency) : null,
+  });
 }
 
 export function updateAgent(input: UpdateAgentInput) {

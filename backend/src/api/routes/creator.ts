@@ -222,6 +222,7 @@ creatorRouter.post('/agents/update', async (req, res) => {
     agent_id?: string
     name?: string
     category?: string
+    description?: string
     short_description?: string
     services?: string[]
     mode?: string
@@ -272,6 +273,7 @@ creatorRouter.post('/agents/update', async (req, res) => {
 
   if (body.name !== undefined) addSet('name', body.name)
   if (body.category !== undefined) addSet('category', body.category)
+  if (body.description !== undefined) addSet('description', body.description)
   if (body.short_description !== undefined) addSet('short_description', body.short_description)
   if (body.services !== undefined) addSet('services', body.services)
   if (body.mode !== undefined) addSet('mode', body.mode)
@@ -287,6 +289,78 @@ creatorRouter.post('/agents/update', async (req, res) => {
 
   const detail = await loadAgentDetail(body.agent_id)
   ok(res, 200, 'Agent updated', { agent: detail })
+})
+
+// POST /creator/agents/subscribers
+creatorRouter.post('/agents/subscribers', async (req, res) => {
+  const { user_address, agent_id, page: pageRaw, limit: limitRaw } = req.body as {
+    user_address?: string
+    agent_id?: string
+    page?: number
+    limit?: number
+  }
+
+  if (!user_address || !isAddress(user_address, { strict: false }) || !agent_id) {
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required' } })
+    return
+  }
+
+  const page = Math.max(1, Number(pageRaw) || 1)
+  const limit = Math.min(100, Math.max(1, Number(limitRaw) || 20))
+  const offset = (page - 1) * limit
+
+  const user = await findOrCreateUser(user_address)
+
+  const agentRes = await query<{ agent_id: string; publisher_user_id: string | null }>(
+    'SELECT agent_id, publisher_user_id FROM agents WHERE agent_id = $1',
+    [agent_id],
+  )
+  const agent = agentRes.rows[0]
+  if (!agent) {
+    fail(res, 404, 'Agent not found', {})
+    return
+  }
+  if (agent.publisher_user_id !== user.user_id) {
+    fail(res, 403, 'You do not own this agent', {})
+    return
+  }
+
+  const countRes = await query<{ count: string }>(
+    'SELECT COUNT(*) FROM subscriptions WHERE agent_id = $1',
+    [agent_id],
+  )
+  const totalItems = parseInt(countRes.rows[0]!.count)
+
+  const rows = await query<{
+    user_address: string
+    handle: string | null
+    subscription_id: string
+    status: string
+    started_at: Date
+    last_payment_time: Date | null
+  }>(
+    `SELECT u.user_address, u.handle, s.id AS subscription_id, s.status, s.started_at, s.last_payment_time
+     FROM subscriptions s
+     JOIN users u ON u.user_id = s.user_id
+     WHERE s.agent_id = $1
+     ORDER BY s.started_at DESC
+     LIMIT $2 OFFSET $3`,
+    [agent_id, limit, offset],
+  )
+
+  const subscribers = rows.rows.map(r => ({
+    user_address: r.user_address,
+    handle: r.handle,
+    subscription_id: r.subscription_id,
+    status: r.status,
+    started_at: r.started_at.toISOString(),
+    last_payment_time: r.last_payment_time ? r.last_payment_time.toISOString() : null,
+  }))
+
+  ok(res, 200, 'Data fetched successfully', {
+    subscribers,
+    pagination: { page, limit, total_items: totalItems, total_pages: Math.ceil(totalItems / limit) },
+  })
 })
 
 // POST /creator/earnings
@@ -357,17 +431,17 @@ creatorRouter.post('/earnings', async (req, res) => {
   let withdrawals: object[] = []
   let totalWithdrawn = 0
   if (agentIds.length > 0) {
-    const wRes = await query<{ withdrawal_id: string; amount: string; currency: string; tx_hash: string | null; withdrawn_at: Date }>(
-      `SELECT withdrawal_id, amount, currency, tx_hash, withdrawn_at
+    const wRes = await query<{ withdrawal_id: string; agent_id: string | null; amount: string; currency: string; tx_hash: string | null; withdrawn_at: Date }>(
+      `SELECT withdrawal_id, agent_id, amount, currency, tx_hash, withdrawn_at
        FROM withdrawals WHERE agent_id = ANY($1) ORDER BY withdrawn_at DESC LIMIT 12`,
       [agentIds],
     )
     withdrawals = wRes.rows.map(w => ({
-      payout_id: w.withdrawal_id,
+      withdrawal_id: w.withdrawal_id,
+      agent_id: w.agent_id,
       amount: money(w.amount, w.currency),
-      status: 'paid',
       tx_hash: w.tx_hash,
-      payout_at: w.withdrawn_at.toISOString(),
+      withdrawn_at: w.withdrawn_at.toISOString(),
     }))
 
     const sumW = await query<{ total: string | null }>(
@@ -397,8 +471,7 @@ creatorRouter.post('/earnings', async (req, res) => {
 
   ok(res, 200, 'Data fetched successfully', {
     stats: {
-      net_monthly_recurring_revenue: money(grossMrr, 'USDC'),
-      mrr_change_percent: 0,
+      monthly_recurring_revenue: money(grossMrr, 'USDC'),
       active_subscribers: activeSubscribers,
       subscriber_change: 0,
       withdrawable_balance: money(withdrawableBalance, 'USDC'),
@@ -406,7 +479,7 @@ creatorRouter.post('/earnings', async (req, res) => {
       lifetime_revenue: money(lifetimeRevenue, 'USDC'),
     },
     revenue_by_month: revenueByMonth,
-    payouts: withdrawals, // mapped for backward compatibility in frontend views
+    withdrawals,
     earnings_by_agent: earningsByAgent,
   })
 })

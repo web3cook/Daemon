@@ -18,6 +18,7 @@ import {
   permit2Types,
   subscriptionsAbi,
 } from "./contracts";
+import { getGasFees } from "./gas";
 
 export type SubscribePhase =
   | "idle"
@@ -95,6 +96,7 @@ export function useSubscribeOnChain() {
             functionName: "approve",
             args: [PERMIT2_ADDRESS, maxUint256],
             chainId: CONTRACT_CHAIN.id,
+            ...(await getGasFees(publicClient)),
           });
           await publicClient.waitForTransactionReceipt({ hash: approveHash });
         }
@@ -139,6 +141,7 @@ export function useSubscribeOnChain() {
           abi: subscriptionsAbi,
           functionName: "subscribe",
           chainId: CONTRACT_CHAIN.id,
+          ...(await getGasFees(publicClient)),
           args: [
             serviceAddress,
             USDC_ADDRESS,

@@ -64,7 +64,10 @@ marketplaceRouter.get('/', async (req, res) => {
   const totalItems = parseInt(countRes.rows[0]!.count)
 
   if (totalItems === 0) {
-    fail(res, 404, 'Agents not found', {})
+    ok(res, 200, 'Data fetched successfully', {
+      agents: [],
+      pagination: { page, limit, total_items: 0, total_pages: 0 },
+    })
     return
   }
 
@@ -140,7 +143,7 @@ marketplaceRouter.get('/:onchain_agent_id/card.json', async (req, res) => {
     `SELECT a.onchain_agent_id, a.name, a.description, a.short_description, a.services, a.endpoint_url, a.service_address, u.user_address
      FROM agents a
      LEFT JOIN users u ON u.user_id = a.publisher_user_id
-     WHERE a.onchain_agent_id = $1`,
+     WHERE a.onchain_agent_id::text = $1`,
     [onchain_agent_id],
   )
 
@@ -161,20 +164,52 @@ marketplaceRouter.get('/:onchain_agent_id/card.json', async (req, res) => {
   })
 })
 
+// POST /agents/:agent_id/invoke (POC: stubbed one-time run, paid via X-Payment header)
+marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
+  const { agent_id } = req.params
+  const paramValues = (req.body as { param_values?: Record<string, string> })?.param_values ?? {}
+
+  if (!req.header('x-payment')) {
+    fail(res, 402, 'Payment required', { error_code: 'payment_required' })
+    return
+  }
+
+  const agentRes = await query<{ agent_id: string; name: string; mode: string; one_time_price_amount: string | null }>(
+    `SELECT agent_id, name, mode, one_time_price_amount FROM agents WHERE agent_id = $1`,
+    [agent_id],
+  )
+  const agent = agentRes.rows[0]
+  if (!agent || (agent.mode !== 'one_time' && agent.mode !== 'both')) {
+    fail(res, 404, 'Agent not found', {})
+    return
+  }
+
+  ok(res, 200, 'Run completed', {
+    invocation_id: newRunId(),
+    status: 'completed',
+    agent: { agent_id: agent.agent_id, name: agent.name },
+    inputs: paramValues,
+    output: {
+      summary: `${agent.name} ran successfully.`,
+      generated_at: new Date().toISOString(),
+    },
+  })
+})
+
 // POST /runs (Recording a completed one-time run result)
 marketplaceRouter.post('/runs', async (req, res) => {
-  const { subscriber, agent_id, amount, status_message, link, tx_hash, success } = req.body as {
-    subscriber?: string
+  const { user_address, agent_id, amount, status_message, link, tx_hash, success } = req.body as {
+    user_address?: string
     agent_id?: string
-    amount?: string
+    amount?: { amount?: string; currency?: string }
     status_message?: string
     link?: string
     tx_hash?: string
     success?: boolean
   }
 
-  if (!subscriber || !isAddress(subscriber, { strict: false }) || !agent_id || !amount) {
-    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { subscriber: 'required', agent_id: 'required', amount: 'required' } })
+  if (!user_address || !isAddress(user_address, { strict: false }) || !agent_id || !amount?.amount) {
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required', amount: 'required' } })
     return
   }
 
@@ -184,18 +219,20 @@ marketplaceRouter.post('/runs', async (req, res) => {
     return
   }
 
-  const user = await findOrCreateUser(subscriber)
+  const user = await findOrCreateUser(user_address)
   const runId = newRunId()
+  const currency = amount.currency || 'USDC'
 
   await query(
     `INSERT INTO runs (
       run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, ran_at
-    ) VALUES ($1, $2, $3, NULL, 'one_time', $4, 'USDC', $5, $6, $7, $8, now())`,
+    ) VALUES ($1, $2, $3, NULL, 'one_time', $4, $5, $6, $7, $8, $9, now())`,
     [
       runId,
       agent_id,
       user.user_id,
-      amount,
+      amount.amount,
+      currency,
       status_message || null,
       link || null,
       success !== false,
@@ -209,7 +246,7 @@ marketplaceRouter.post('/runs', async (req, res) => {
       agent_id,
       user_id: user.user_id,
       kind: 'one_time',
-      amount: money(amount, 'USDC'),
+      amount: money(amount.amount, currency),
       status_message,
       link,
       success: success !== false,

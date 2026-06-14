@@ -70,20 +70,13 @@ userRouter.post('/subscriptions', async (req, res) => {
   }
 
   const user = await findUserByAddress(user_address)
-  if (!user) {
-    fail(res, 404, 'No subscriptions found', {})
-    return
-  }
 
-  const rows = await query<SubscriptionJoinRow>(
-    `${SUBSCRIPTION_SELECT} WHERE s.user_id = $1 AND s.status = $2 ORDER BY s.started_at DESC`,
-    [user.user_id, filterStatus],
-  )
-
-  if (rows.rows.length === 0) {
-    fail(res, 404, 'No subscriptions found', {})
-    return
-  }
+  const rows = user
+    ? await query<SubscriptionJoinRow>(
+        `${SUBSCRIPTION_SELECT} WHERE s.user_id = $1 AND s.status = $2 ORDER BY s.started_at DESC`,
+        [user.user_id, filterStatus],
+      )
+    : { rows: [] as SubscriptionJoinRow[] }
 
   const subscriptions = rows.rows.map(serializeSubscription)
 

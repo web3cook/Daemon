@@ -1,4 +1,5 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { http } from "viem";
 import { arbitrum, arbitrumSepolia, mainnet } from "wagmi/chains";
 
 // WalletConnect Cloud project id. Required for WalletConnect-based wallets
@@ -10,7 +11,14 @@ const projectId =
 export const wagmiConfig = getDefaultConfig({
   appName: "Daemon",
   projectId,
-  chains: [arbitrum, arbitrumSepolia, mainnet],
+  chains: [arbitrumSepolia, arbitrum, mainnet],
+  transports: {
+    // viem's default mainnet RPC (eth.merkle.io) blocks browser CORS, which
+    // breaks RainbowKit's ENS avatar/name lookups. publicnode allows CORS.
+    [mainnet.id]: http("https://ethereum-rpc.publicnode.com"),
+    [arbitrum.id]: http(),
+    [arbitrumSepolia.id]: http("https://arb-sepolia.g.alchemy.com/v2/QfsHEvw8giD-VJzTsCH2DrpLD7i6dfzN"),
+  },
   ssr: true,
 });
 

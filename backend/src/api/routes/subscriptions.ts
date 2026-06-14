@@ -11,11 +11,12 @@ export const subscriptionsRouter = Router()
 
 const SUBSCRIPTION_SELECT = `
   SELECT s.id, s.status, s.usage_count,
+         s.amount_per_cycle, s.interval_seconds,
          s.last_payment_amount, s.last_payment_time,
          s.next_payment_amount, s.next_payment_time,
          s.started_at, s.cancelled_at,
          s.service_address, s.onchain_sub_id,
-         a.agent_id, a.name AS agent_name, a.logo AS agent_logo
+         a.agent_id, a.name AS agent_name, a.logo AS agent_logo, a.payment_frequency
   FROM subscriptions s
   JOIN agents a ON a.agent_id = s.agent_id
 `
@@ -28,15 +29,15 @@ function nextPaymentDate(intervalSeconds: number, from: Date): Date {
 
 // POST /subscriptions
 subscriptionsRouter.post('/', async (req, res) => {
-  const { user_address, agent_id, onchain_sub_id, tx_hash } = req.body as {
+  const { user_address, agent_id, subscription_id: onchain_sub_id, tx_hash } = req.body as {
     user_address?: string
     agent_id?: string
-    onchain_sub_id?: string
+    subscription_id?: string
     tx_hash?: string
   }
 
   if (!user_address || !isAddress(user_address, { strict: false }) || !agent_id || !onchain_sub_id) {
-    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required', onchain_sub_id: 'required' } })
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required', subscription_id: 'required' } })
     return
   }
 

@@ -15,15 +15,10 @@ CREATE TABLE IF NOT EXISTS auth_nonces (
   expires_at   TIMESTAMPTZ NOT NULL
 );
 
--- Drop old tables to migrate smoothly to v2 schema
-DROP TABLE IF EXISTS system_constants CASCADE;
-DROP TABLE IF EXISTS withdrawals CASCADE;
-DROP TABLE IF EXISTS runs CASCADE;
+-- Drop tables from the pre-v2 schema that are no longer used.
 DROP TABLE IF EXISTS invoices CASCADE;
 DROP TABLE IF EXISTS payouts CASCADE;
-DROP TABLE IF EXISTS subscriptions CASCADE;
 DROP TABLE IF EXISTS plans CASCADE;
-DROP TABLE IF EXISTS agents CASCADE;
 
 CREATE TABLE IF NOT EXISTS agents (
   agent_id              TEXT PRIMARY KEY,            -- ulid
