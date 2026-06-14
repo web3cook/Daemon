@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCreatorAgents } from "@/lib/api/hooks";
-import { formatMoney } from "@/lib/api/format";
+import { useCreatorAgents, useCreatorRuns } from "@/lib/api/hooks";
+import { formatDate, formatMoney } from "@/lib/api/format";
+import { shortenAddress } from "@/lib/wagmi";
 import Avatar from "@/components/Avatar";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
@@ -11,8 +12,10 @@ export default function CreatorAgentsPage() {
   const router = useRouter();
   const { wallet, openWalletModal } = useApp();
   const { data, isLoading, isError, error, refetch } = useCreatorAgents(wallet?.address);
+  const runsQuery = useCreatorRuns(wallet?.address);
 
   const agents = data?.agents ?? [];
+  const runs = runsQuery.data?.runs ?? [];
 
   return (
     <div>
@@ -71,6 +74,32 @@ export default function CreatorAgentsPage() {
               <button className="btn-ghost">edit listing</button>
             </div>
           ))}
+        </div>
+      )}
+
+      {wallet && agents.length > 0 && (
+        <div className="billing-card">
+          <div className="section-label">RECENT ACTIVITY</div>
+          {runsQuery.isLoading && <div className="billing-note">loading activity…</div>}
+          {runsQuery.isError && <div className="billing-note">Couldn’t load activity.</div>}
+          {!runsQuery.isLoading && !runsQuery.isError && runs.length === 0 && (
+            <div className="billing-note">No subscriber executions yet.</div>
+          )}
+          {runs.length > 0 && (
+            <div className="invoice-list">
+              {runs.map((r) => (
+                <div key={r.run_id} className="invoice-row">
+                  <div className="invoice-date">{formatDate(r.ran_at)}</div>
+                  <div className="invoice-desc">
+                    {r.agent} · {r.handle ?? shortenAddress(r.user_address)}
+                    {r.status_message ? ` · ${r.status_message}` : ""}
+                  </div>
+                  <div className="invoice-amt">{formatMoney(r.amount, { cents: true })}</div>
+                  <div className={`pill${r.success ? " ok" : ""}`}>{r.kind}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -33,6 +33,8 @@ export function billingIntervalSeconds(interval: BillingInterval): number {
   switch (interval) {
     case "weekly":
       return 7 * 24 * 60 * 60;
+    case "test_5min":
+      return 5 * 60;
     case "monthly":
     default:
       return 30 * 24 * 60 * 60;

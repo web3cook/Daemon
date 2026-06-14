@@ -76,11 +76,29 @@ subscriptionsRouter.post('/', async (req, res) => {
   const interval = agent.interval_seconds || 0
   const next = nextPaymentDate(interval, now)
 
-  await query(
+  // A user can only have one subscriptions row per agent (unique on
+  // user_id, agent_id), so re-subscribing after a cancellation must update
+  // the existing row rather than insert a new one.
+  const upserted = await query<{ id: string }>(
     `INSERT INTO subscriptions (
       id, user_id, agent_id, service_address, status, onchain_sub_id,
       amount_per_cycle, interval_seconds, next_payment_amount, next_payment_time, tx_hash, started_at
-    ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11)`,
+    ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11)
+    ON CONFLICT (user_id, agent_id) DO UPDATE SET
+      status = 'active',
+      service_address = EXCLUDED.service_address,
+      onchain_sub_id = EXCLUDED.onchain_sub_id,
+      amount_per_cycle = EXCLUDED.amount_per_cycle,
+      interval_seconds = EXCLUDED.interval_seconds,
+      usage_count = 0,
+      last_payment_amount = NULL,
+      last_payment_time = NULL,
+      next_payment_amount = EXCLUDED.next_payment_amount,
+      next_payment_time = EXCLUDED.next_payment_time,
+      tx_hash = EXCLUDED.tx_hash,
+      started_at = EXCLUDED.started_at,
+      cancelled_at = NULL
+    RETURNING id`,
     [
       subId,
       user.user_id,
@@ -96,7 +114,7 @@ subscriptionsRouter.post('/', async (req, res) => {
     ],
   )
 
-  const subRow = await query<any>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [subId])
+  const subRow = await query<any>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [upserted.rows[0]!.id])
 
   ok(res, 201, 'Subscription created', {
     subscription: serializeSubscription(subRow.rows[0]!),

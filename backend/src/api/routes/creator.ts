@@ -13,7 +13,7 @@ export const creatorRouter = Router()
 
 const VALID_CATEGORIES = new Set(['finance', 'productivity', 'career', 'engineering', 'research', 'other'])
 const VALID_MODES = new Set(['subscription', 'one_time', 'both'])
-const VALID_PAYMENT_FREQUENCIES = new Set(['weekly', 'monthly'])
+const VALID_PAYMENT_FREQUENCIES = new Set(['weekly', 'monthly', 'test_5min'])
 
 function validateAgentPayload(body: {
   name?: string
@@ -48,7 +48,7 @@ function validateAgentPayload(body: {
         errors['interval_seconds'] = 'must be > 0'
       }
       if (body.payment_frequency && !VALID_PAYMENT_FREQUENCIES.has(body.payment_frequency)) {
-        errors['payment_frequency'] = 'must be weekly or monthly'
+        errors['payment_frequency'] = 'must be weekly, monthly, or test_5min'
       }
     }
     if (body.mode === 'one_time' || body.mode === 'both') {
@@ -359,6 +359,112 @@ creatorRouter.post('/agents/subscribers', async (req, res) => {
 
   ok(res, 200, 'Data fetched successfully', {
     subscribers,
+    pagination: { page, limit, total_items: totalItems, total_pages: Math.ceil(totalItems / limit) },
+  })
+})
+
+// POST /creator/agents/runs
+// Execution history across the creator's agents (or a single agent if
+// `agent_id` is given), so creators can see their subscribers' subscriptions
+// being executed.
+creatorRouter.post('/agents/runs', async (req, res) => {
+  const { user_address, agent_id, page: pageRaw, limit: limitRaw } = req.body as {
+    user_address?: string
+    agent_id?: string
+    page?: number
+    limit?: number
+  }
+
+  if (!user_address || !isAddress(user_address, { strict: false })) {
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required' } })
+    return
+  }
+
+  const page = Math.max(1, Number(pageRaw) || 1)
+  const limit = Math.min(100, Math.max(1, Number(limitRaw) || 20))
+  const offset = (page - 1) * limit
+
+  const user = await findOrCreateUser(user_address)
+
+  let agentIds: string[]
+  if (agent_id) {
+    const agentRes = await query<{ agent_id: string; publisher_user_id: string | null }>(
+      'SELECT agent_id, publisher_user_id FROM agents WHERE agent_id = $1',
+      [agent_id],
+    )
+    const agent = agentRes.rows[0]
+    if (!agent) {
+      fail(res, 404, 'Agent not found', {})
+      return
+    }
+    if (agent.publisher_user_id !== user.user_id) {
+      fail(res, 403, 'You do not own this agent', {})
+      return
+    }
+    agentIds = [agent_id]
+  } else {
+    const agentsRes = await query<{ agent_id: string }>(
+      'SELECT agent_id FROM agents WHERE publisher_user_id = $1',
+      [user.user_id],
+    )
+    agentIds = agentsRes.rows.map(r => r.agent_id)
+  }
+
+  if (agentIds.length === 0) {
+    ok(res, 200, 'Data fetched successfully', { runs: [], pagination: { page, limit, total_items: 0, total_pages: 0 } })
+    return
+  }
+
+  const countRes = await query<{ count: string }>('SELECT COUNT(*) FROM runs WHERE agent_id = ANY($1)', [agentIds])
+  const totalItems = parseInt(countRes.rows[0]!.count)
+
+  const rows = await query<{
+    run_id: string
+    agent_id: string
+    agent_name: string
+    agent_logo: string | null
+    user_address: string
+    handle: string | null
+    subscription_id: string | null
+    kind: string
+    amount: string
+    currency: string
+    status_message: string | null
+    link: string | null
+    success: boolean
+    tx_hash: string | null
+    ran_at: Date
+  }>(
+    `SELECT r.run_id, r.agent_id, a.name AS agent_name, a.logo AS agent_logo,
+            u.user_address, u.handle, r.subscription_id, r.kind, r.amount, r.currency,
+            r.status_message, r.link, r.success, r.tx_hash, r.ran_at
+     FROM runs r
+     JOIN agents a ON a.agent_id = r.agent_id
+     JOIN users u ON u.user_id = r.user_id
+     WHERE r.agent_id = ANY($1)
+     ORDER BY r.ran_at DESC LIMIT $2 OFFSET $3`,
+    [agentIds, limit, offset],
+  )
+
+  const runs = rows.rows.map(r => ({
+    run_id: r.run_id,
+    agent_id: r.agent_id,
+    agent: r.agent_name,
+    agent_logo: r.agent_logo,
+    user_address: r.user_address,
+    handle: r.handle,
+    subscription_id: r.subscription_id,
+    kind: r.kind,
+    amount: money(r.amount, r.currency),
+    status_message: r.status_message,
+    link: r.link,
+    success: r.success,
+    tx_hash: r.tx_hash,
+    ran_at: r.ran_at.toISOString(),
+  }))
+
+  ok(res, 200, 'Data fetched successfully', {
+    runs,
     pagination: { page, limit, total_items: totalItems, total_pages: Math.ceil(totalItems / limit) },
   })
 })

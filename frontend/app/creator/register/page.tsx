@@ -91,7 +91,14 @@ const MODE_OPTS: { key: AgentMode; label: string; hint: string }[] = [
 const FREQ_OPTS: { key: BillingInterval; label: string; hint: string }[] = [
   { key: "weekly", label: "weekly", hint: "Paid every 7 days" },
   { key: "monthly", label: "monthly", hint: "Paid every 30 days" },
+  { key: "test_5min", label: "every 5 min", hint: "Testing only — paid every 5 minutes" },
 ];
+
+function freqUnit(freq: BillingInterval): string {
+  if (freq === "weekly") return "wk";
+  if (freq === "test_5min") return "5min";
+  return "mo";
+}
 
 const STEP_LABELS = ["basics", "pricing + inputs", "review"];
 
@@ -183,7 +190,7 @@ export default function RegisterAgentPage() {
   const removeParam = (i: number) =>
     setReg((r) => ({ ...r, params: r.params.filter((_, idx) => idx !== i) }));
 
-  const period = reg.freq === "weekly" ? "wk" : "mo";
+  const period = freqUnit(reg.freq);
   const priceSummary = [
     hasSub ? `$${reg.subPrice || "0"}/${period}` : null,
     hasOneTime ? `$${reg.oneTimePrice || "0"}/run` : null,
@@ -477,7 +484,7 @@ export default function RegisterAgentPage() {
             {hasSub && (
               <div className="field">
                 <label className="field-label">
-                  SUBSCRIPTION PRICE ($/{reg.freq === "weekly" ? "WK" : "MO"})
+                  SUBSCRIPTION PRICE ($/{freqUnit(reg.freq).toUpperCase()})
                 </label>
                 <input
                   className={`input mono-input${errors.subPrice ? " has-error" : ""}`}
