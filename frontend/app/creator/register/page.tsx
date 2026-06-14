@@ -39,7 +39,15 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "couldn’t publish agent";
 }
 
-type FieldError = "name" | "desc" | "endpoint" | "services" | "subPrice" | "oneTimePrice";
+type FieldError =
+  | "name"
+  | "desc"
+  | "endpoint"
+  | "services"
+  | "subPrice"
+  | "oneTimePrice"
+  | "icon"
+  | "logo";
 
 interface ParamDraft {
   label: string;
@@ -49,6 +57,8 @@ interface ParamDraft {
 
 interface RegForm {
   name: string;
+  icon: string;
+  logo: string;
   cat: AgentCategory;
   desc: string;
   endpoint: string;
@@ -62,6 +72,8 @@ interface RegForm {
 
 const INITIAL: RegForm = {
   name: "",
+  icon: "",
+  logo: "",
   cat: "finance",
   desc: "",
   endpoint: "",
@@ -101,6 +113,15 @@ function freqUnit(freq: BillingInterval): string {
 }
 
 const STEP_LABELS = ["basics", "pricing + inputs", "review"];
+
+function isValidUrl(value: string): boolean {
+  try {
+    new URL(value.trim());
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function paramKey(label: string, i: number): string {
   return (
@@ -169,6 +190,12 @@ export default function RegisterAgentPage() {
         next.endpoint = "must be a valid URL, e.g. https://your-agent.example.com";
       }
     }
+    if (reg.icon.trim() && !isValidUrl(reg.icon)) {
+      next.icon = "must be a valid image URL";
+    }
+    if (reg.logo.trim() && !isValidUrl(reg.logo)) {
+      next.logo = "must be a valid image URL";
+    }
     return next;
   };
 
@@ -202,6 +229,8 @@ export default function RegisterAgentPage() {
 
   const reviewRows = [
     { k: "NAME", v: reg.name || "-" },
+    { k: "ICON", v: reg.icon.trim() || "-" },
+    { k: "LOGO", v: reg.logo.trim() || "-" },
     { k: "CATEGORY", v: catLabel },
     { k: "MODE", v: reg.mode.replace("_", " ") },
     { k: "ENDPOINT", v: reg.endpoint || "-" },
@@ -321,6 +350,9 @@ export default function RegisterAgentPage() {
       endpoint_url: reg.endpoint.trim(),
       mode: reg.mode,
       name: reg.name.trim() || "Untitled agent",
+      icon: reg.icon.trim(),
+      // Fall back to the icon when no separate logo URL is provided.
+      logo: reg.logo.trim() || reg.icon.trim(),
       category: reg.cat,
       description: reg.desc,
       services: chips,
@@ -374,6 +406,38 @@ export default function RegisterAgentPage() {
               placeholder="e.g. Nightwatch"
             />
             {errors.name && <div className="field-error">{errors.name}</div>}
+          </div>
+          <div className="field">
+            <label className="field-label">
+              ICON URL <span className="hint">(square avatar shown on the agent card)</span>
+            </label>
+            <div className="logo-input-row">
+              {reg.icon.trim() && isValidUrl(reg.icon) ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img className="logo-preview" src={reg.icon.trim()} alt="icon preview" />
+              ) : (
+                <div className="logo-preview empty">{(reg.name.trim()[0] ?? "·").toLowerCase()}</div>
+              )}
+              <input
+                className={`input${errors.icon ? " has-error" : ""}`}
+                value={reg.icon}
+                onChange={(e) => patch({ icon: e.target.value })}
+                placeholder="https://…/icon.png"
+              />
+            </div>
+            {errors.icon && <div className="field-error">{errors.icon}</div>}
+          </div>
+          <div className="field">
+            <label className="field-label">
+              LOGO URL <span className="hint">(optional, falls back to the icon)</span>
+            </label>
+            <input
+              className={`input${errors.logo ? " has-error" : ""}`}
+              value={reg.logo}
+              onChange={(e) => patch({ logo: e.target.value })}
+              placeholder="https://…/logo.png"
+            />
+            {errors.logo && <div className="field-error">{errors.logo}</div>}
           </div>
           <div className="field">
             <label className="field-label">CATEGORY</label>

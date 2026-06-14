@@ -7,7 +7,7 @@ x-backend-env: &backend-env
   CORS_ORIGIN: http://localhost:3000
   RPC_URL: https://sepolia-rollup.arbitrum.io/rpc
   CHAIN_ID: "421614"
-  PRIVATE_KEY: "${PRIVATE_KEY}"
+  PRIVATE_KEY: "0x2b65f250e2a69f06bbf834466c8f09ea1b6dea509d3586af2979fd11567679cd"
   SUBSCRIPTIONS_ADDR: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed"
   SERVICE_FACTORY_ADDR: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3"
   IDENTITY_REGISTRY_ADDR: "0x4517993f49F30F1Cc71ebE2e083c91fA41EeFa45"
@@ -66,42 +66,42 @@ services:
   # Mock x402 facilitator (price + route endpoints) used by the executor to
   # price and route agent payments. Runs the agent-side daemon for the
   # NightWatchCCC agent registered via the creator flow.
-  agents:
-    build:
-      context: ./agents
-      dockerfile: Dockerfile
-    ports:
-      - "8402:8402"
-    environment:
-      PRIVATE_KEY: "${PRIVATE_KEY}"
-      USDC_ADDR: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
-      CHAIN_ID: "421614"
-      MOCK_X402_PORT: "8402"
+  # agents:
+  #   build:
+  #     context: ./agents
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8402:8402"
+  #   environment:
+  #     PRIVATE_KEY: "0x1"
+  #     USDC_ADDR: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
+  #     CHAIN_ID: "421614"
+  #     MOCK_X402_PORT: "8402"
 
   # Executes due subscriptions on-chain (Subscriptions.execute) for the
   # NightWatchCCC agent (onchain_agent_id=4, service
   # 0x5cC2D7099d1f3f41c4204D22AECa91e065CcCa25), polling the shared DB on a
   # fixed interval.
-  executor:
-    build:
-      context: ./executor
-      dockerfile: Dockerfile
-    environment:
-      <<: *backend-env
-      AGENT_ID: "4"
-      MIN_TRUST_SCORE: "50"
-      MAX_GAS_GWEI: "0.1"
-      SCHEDULER_INTERVAL_SECS: "30"
-      MOCK_X402_ENABLED: "true"
-      X402_PRICE_URL: "http://agents:8402/price"
-      X402_ROUTING_URL: "http://agents:8402/route"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      backend:
-        condition: service_started
-      agents:
-        condition: service_started
+  # executor:
+  #   build:
+  #     context: ./executor
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     <<: *backend-env
+  #     AGENT_ID: "4"
+  #     MIN_TRUST_SCORE: "50"
+  #     MAX_GAS_GWEI: "0.1"
+  #     SCHEDULER_INTERVAL_SECS: "30"
+  #     MOCK_X402_ENABLED: "true"
+  #     X402_PRICE_URL: "http://agents:8402/price"
+  #     X402_ROUTING_URL: "http://agents:8402/route"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     backend:
+  #       condition: service_started
+  #     agents:
+  #       condition: service_started
 
   frontend:
     build:

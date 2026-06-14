@@ -163,6 +163,10 @@ export interface RegisterAgentInput {
   endpoint_url: string;
   mode: AgentMode;
   name: string;
+  /** Square icon/avatar image URL shown on the agent card. */
+  icon: string;
+  /** Logo image URL; falls back to the icon / a monogram when empty. */
+  logo: string;
   category: AgentCategory;
   description: string;
   services: string[];

@@ -35,7 +35,7 @@ export default function SubscriptionsPage() {
   const subs = subsQuery.data?.subscriptions ?? [];
   const summary = subsQuery.data?.summary;
   const runs = runsQuery.data?.runs ?? [];
-  const totalSpent = runsQuery.data?.summary.total_spent;
+  const totalSpent = runsQuery.data?.summary?.total_spent;
 
   return (
     <div>

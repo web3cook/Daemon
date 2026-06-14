@@ -1,7 +1,11 @@
 import type { Money } from "./types";
 
 /** Render a Money object as a UI string, e.g. `$19`, `$12.00`, `$4,230`. */
-export function formatMoney(money: Money, opts?: { cents?: boolean }): string {
+export function formatMoney(
+  money: Money | null | undefined,
+  opts?: { cents?: boolean },
+): string {
+  if (!money || money.amount == null) return opts?.cents ? "$0.00" : "$0";
   const n = Number(money.amount);
   const isCurrencyDollar = money.currency === "USDC" || money.currency === "USD";
   const showCents = opts?.cents ?? !Number.isInteger(n);

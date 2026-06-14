@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { erc20Abi, maxUint160, maxUint256, parseEventLogs } from "viem";
+import { erc20Abi, maxUint256, parseEventLogs } from "viem";
 import {
   useAccount,
   usePublicClient,
@@ -80,15 +80,21 @@ export function useSubscribeOnChain() {
         // later permit can't cut an earlier subscription's window short.
         const permitExpiry = now + durationSecs + 300;
         const cycles = BigInt(Math.floor(durationSecs / intervalSecs) + 1);
+        // Approve only what this subscription can pull over its lifetime:
+        // amount per cycle times the number of cycles in the chosen duration.
+        const totalAmount = amountPerCycle * cycles;
 
-        // 1. One-time ERC20 approval so Permit2 can move the user's USDC.
+        // 1. One-time ERC20 approval so Permit2 can move the user's USDC. This
+        // is the canonical max approval to Permit2 (Permit2 itself bounds every
+        // actual pull via the per-subscription PermitSingle below), so a user
+        // only signs this approval once across all their subscriptions.
         const allowance = await publicClient.readContract({
           address: USDC_ADDRESS,
           abi: erc20Abi,
           functionName: "allowance",
           args: [address, PERMIT2_ADDRESS],
         });
-        if (allowance < amountPerCycle * cycles) {
+        if (allowance < totalAmount) {
           setPhase("approving");
           const approveHash = await writeContractAsync({
             address: USDC_ADDRESS,
@@ -101,9 +107,9 @@ export function useSubscribeOnChain() {
           await publicClient.waitForTransactionReceipt({ hash: approveHash });
         }
 
-        // 2. Sign the Permit2 PermitSingle. Amount is uint160 max so the
-        // shared (owner, token, spender) allowance slot is never depleted
-        // by concurrent subscriptions; expiry bounds the subscription.
+        // 2. Sign the Permit2 PermitSingle. Amount is bounded to this
+        // subscription's total (amount per cycle x cycles); expiry bounds the
+        // subscription window so the spender can never pull more than this.
         setPhase("permit");
         const [, , nonce] = await publicClient.readContract({
           address: PERMIT2_ADDRESS,
@@ -114,7 +120,7 @@ export function useSubscribeOnChain() {
         const permitSingle = {
           details: {
             token: USDC_ADDRESS,
-            amount: maxUint160,
+            amount: totalAmount,
             expiration: permitExpiry,
             nonce,
           },

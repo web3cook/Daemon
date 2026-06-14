@@ -145,6 +145,8 @@ creatorRouter.post('/agents/register', async (req, res) => {
     category?: string
     description?: string
     short_description?: string
+    icon?: string
+    logo?: string
     logo_url?: string
     services?: string[]
     mode?: string
@@ -176,7 +178,10 @@ creatorRouter.post('/agents/register', async (req, res) => {
 
   const longDescription = (body.description ?? body.short_description ?? '').trim()
   const blurb = await generateAgentBlurb(body.name!, longDescription)
-  const logo = body.logo_url?.trim() || null
+  // Icon is the square card avatar; logo falls back to the icon (and the
+  // legacy logo_url field) so older clients keep working.
+  const icon = body.icon?.trim() || body.logo_url?.trim() || null
+  const logo = body.logo?.trim() || body.logo_url?.trim() || icon
   const paramSchema = normalizeParamSchema(body.param_schema)
 
   await query(
@@ -191,7 +196,7 @@ creatorRouter.post('/agents/register', async (req, res) => {
       user.user_id,
       user.handle ?? body.user_address,
       body.name,
-      logo,
+      icon,
       logo,
       body.category,
       blurb.tagline,

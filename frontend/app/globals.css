@@ -1624,12 +1624,34 @@ select.input {
 
 /* registration: logo preview + param editor */
 .logo-preview {
-  margin-top: 10px;
   width: 56px;
   height: 56px;
   border-radius: 12px;
   object-fit: cover;
   border: 1px solid var(--line-2);
+  flex-shrink: 0;
+}
+
+.logo-preview.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 600;
+  text-transform: lowercase;
+  color: var(--faint);
+  background: var(--line);
+}
+
+/* icon URL field: preview swatch next to the input */
+.logo-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-input-row .input {
+  flex: 1;
 }
 
 .param-editor {
