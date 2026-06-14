@@ -1,11 +1,10 @@
 [
   {
-    "name": "transferFrom",
+    "name": "approve",
     "type": "function",
     "stateMutability": "nonpayable",
     "inputs": [
-      { "name": "from", "type": "address" },
-      { "name": "to", "type": "address" },
+      { "name": "spender", "type": "address" },
       { "name": "amount", "type": "uint256" }
     ],
     "outputs": [{ "name": "", "type": "bool" }]
