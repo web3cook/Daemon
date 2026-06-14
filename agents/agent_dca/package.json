@@ -1,5 +1,5 @@
 {
-  "name": "daemon-agents",
+  "name": "agent-dca",
   "version": "1.0.0",
   "private": true,
   "type": "module",

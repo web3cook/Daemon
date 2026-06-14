@@ -16,15 +16,17 @@ import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { parseUnits, stringToHex } from "viem";
 import { shortenAddress } from "./wagmi";
 import { ApiError } from "./api/client";
-import { useCancelSubscription, useOnboard, useSubscribe } from "./api/hooks";
+import { useCancelSubscription, useInvokeAgent, useOnboard, useSubscribe } from "./api/hooks";
 import { type InvokeAgentDetails } from "./api/endpoints";
 import { USDC_DECIMALS, billingIntervalSeconds } from "./contracts";
 import {
   CANCEL_PHASE_LABEL,
   SUBSCRIBE_PHASE_LABEL,
   useCancelOnChain,
+  useOneTimePermit,
   useSubscribeOnChain,
 } from "./useSubscribeOnChain";
+import { PLATFORM_WALLET_ADDRESS } from "./contracts";
 import type { AgentMode, BillingInterval, Money, ParamField } from "./api/types";
 
 export type Role = "sub" | "cre";
@@ -103,16 +105,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const subscribeMut = useSubscribe();
   const cancelMut = useCancelSubscription();
   const onboardMut = useOnboard();
+  const invokeMut = useInvokeAgent();
   const { subscribeOnChain, phase: txPhase } = useSubscribeOnChain();
   const { cancelOnChain } = useCancelOnChain();
+  const { signOneTimePermit } = useOneTimePermit();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [pendingSub, setPendingSub] = useState<PendingSub | null>(null);
   const [oneTimeOutput, setOneTimeOutput] = useState<InvokeAgentDetails | null>(null);
-  // One-time (x402) execution is not wired up yet; pending is always false.
-  const oneTimePending = false;
+  const oneTimePending = invokeMut.isPending;
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const prevConnected = useRef(false);
 
@@ -252,13 +255,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const runOneTime = useCallback(
-    // One-time runs settle via x402 (EIP-3009) directly against the creator's
-    // endpoint. That direct-payment flow is not wired up yet, so surface a
-    // clear message instead of faking a successful run.
-    (_paramValues: Record<string, string>) => {
-      showToast("one-time payments (x402) are not available yet");
+    async (paramValues: Record<string, string>) => {
+      if (!pendingSub || !pendingSub.oneTimePrice) return;
+      if (!PLATFORM_WALLET_ADDRESS) {
+        showToast("platform wallet not configured");
+        return;
+      }
+      try {
+        const amount = parseUnits(pendingSub.oneTimePrice.amount, USDC_DECIMALS);
+        const permit = await signOneTimePermit(amount, PLATFORM_WALLET_ADDRESS);
+        invokeMut.mutate(
+          { agentId: pendingSub.agentId, paramValues, permit },
+          {
+            onSuccess: (data) => setOneTimeOutput(data),
+            onError: (e) => showToast(errMessage(e, "run failed")),
+          },
+        );
+      } catch (e) {
+        showToast(errMessage(e, "payment signature failed"));
+      }
     },
-    [showToast],
+    [pendingSub, invokeMut, signOneTimePermit, showToast],
   );
 
   const cancelSub = useCallback(

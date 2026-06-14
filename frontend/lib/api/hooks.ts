@@ -7,6 +7,7 @@ import {
   createSubscription,
   getAgent,
   getCreatorEarnings,
+  invokeAgent,
   listAgents,
   listCreatorAgents,
   listCreatorRuns,
@@ -24,6 +25,7 @@ import type {
   UpdateAgentInput,
   UserRole,
 } from "./types";
+import type { OneTimePermit } from "../useSubscribeOnChain";
 
 export const queryKeys = {
   agents: (query: AgentQuery) => ["agents", query] as const,
@@ -137,6 +139,13 @@ export function useCancelSubscription() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["subscriptions", vars.address] });
     },
+  });
+}
+
+export function useInvokeAgent() {
+  return useMutation({
+    mutationFn: (vars: { agentId: string; paramValues: Record<string, string>; permit: OneTimePermit }) =>
+      invokeAgent(vars.agentId, vars.paramValues, vars.permit),
   });
 }
 

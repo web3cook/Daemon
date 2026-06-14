@@ -2,7 +2,7 @@
 export interface PaymentRequirements {
   scheme:            string
   network:           string
-  maxAmountRequired: string // USDC amount, smallest unit (6 dec)
+  maxAmountRequired: string // USDC amount, smallest unit (6 dec), e.g. "10000" = 0.01 USDC
   asset:             string // USDC contract address
   payTo:             string // server wallet
   description:       string
@@ -14,7 +14,7 @@ export interface Payment {
   network: string
   asset:   string
   payload: {
-    from:  string // agent EOA
+    from:  string // payer EOA
     value: string // must match maxAmountRequired
     nonce: string // unique per request
   }

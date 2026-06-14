@@ -6,8 +6,8 @@ import { withRetry }                        from '../utils/retry.js'
 import { SubscriptionsABI, ValidationRegistryABI } from '../contracts/index.js'
 import { query }             from '../db/pool.js'
 import type { Clients }     from '../chain/client.js'
-import type { X402Client }  from '../x402/client.js'
-import type { ClaudeAgent } from '../agent/claude.js'
+import type { X402Client, RouteResponse } from '../x402/client.js'
+import type { ClaudeAgent, Decision } from '../agent/claude.js'
 import { config }           from '../config.js'
 
 // Reflects the deployed Subscription struct (Subscriptions.sol). Timing
@@ -69,7 +69,16 @@ export class Executor {
       return
     }
 
-    // ── 3. ERC-8004 trust score check ─────────────────────────────────────────
+    // ── 3. Look up the agent's x402 endpoint (registered by the creator) ──────
+    const agentRes = await query<{ endpoint_url: string | null }>(
+      `SELECT a.endpoint_url FROM subscriptions s
+       JOIN agents a ON a.agent_id = s.agent_id
+       WHERE s.onchain_sub_id = $1`,
+      [subId],
+    )
+    const endpointUrl = agentRes.rows[0]?.endpoint_url ?? null
+
+    // ── 4. ERC-8004 trust score check ─────────────────────────────────────────
     const score = await withRetry(
       () => publicClient.readContract({
         address:      config.validationRegistryAddr,
@@ -90,7 +99,7 @@ export class Executor {
       score: score.toString(),
     }, 'executing subscription')
 
-    // ── 4. Gas price ceiling (PRD §9.1) ─────────────────────────────────────
+    // ── 5. Gas price ceiling (PRD §9.1, hard rule) ────────────────────────────
     const gasPrice     = await withRetry(
       () => publicClient.getGasPrice(),
       { label: 'getGasPrice', maxAttempts: 3 },
@@ -98,63 +107,93 @@ export class Executor {
     const gasPriceGwei = Number(gasPrice) / 1e9
     log.info({ gasPriceGwei: gasPriceGwei.toFixed(6), ceilingGwei: config.maxGasGwei }, 'gas check')
 
-    // ── 5. Fetch live price via x402 ─────────────────────────────────────────
-    const priceResp = await this.x402.getPrice(config.x402PriceUrl, 'ETH')
-    log.info({
-      priceUsd:  priceResp.price_usdc,
-      change24h: `${priceResp.change_percent_24hr >= 0 ? '+' : ''}${priceResp.change_percent_24hr.toFixed(2)}%`,
-      source:    priceResp.source,
-    }, 'price fetched')
+    if (gasPriceGwei > config.maxGasGwei) {
+      throw new GasCeilingError(gasPriceGwei, config.maxGasGwei)
+    }
 
-    // ── 6. Claude safety check ───────────────────────────────────────────────
-    let slippageBps = 50
+    // ── 6. Price + execution-safety decision + swap route ─────────────────────
+    let decision:          Decision
+    let routeResp:         RouteResponse
+    let settlementTxHash:  string | undefined
 
-    if (this.claude) {
-      const decision = await this.claude.decide({
-        token:             'ETH',
-        priceUsdc:         priceResp.price_usdc,
-        changePercent24Hr: priceResp.change_percent_24hr,
-        amountUsdc:        formatUnits(sub.amountPerCycle, 6),
+    if (endpointUrl) {
+      // Paid x402 call to the agent's own decision endpoint — settles a real
+      // on-chain USDC transferFrom() before returning the plan.
+      const result = await this.x402.decide(`${endpointUrl.replace(/\/$/, '')}/v1/decide`, {
+        token:        'ETH',
+        spendToken:   sub.spendToken,
+        outputToken:  config.outputTokenAddr,
+        spendAmount:  sub.amountPerCycle.toString(),
+        aggregator:   config.aggregatorAddr,
         gasPriceGwei,
       })
 
       log.info({
-        shouldExecute: decision.should_execute,
-        slippageBps:   decision.slippage_bps,
-        anomaly:       decision.anomaly_detected,
-        reasoning:     decision.reasoning,
-      }, 'claude decision')
+        priceUsd:  result.price.price_usdc,
+        change24h: `${result.price.change_percent_24hr >= 0 ? '+' : ''}${result.price.change_percent_24hr.toFixed(2)}%`,
+        source:    result.price.source,
+        settlementTx: result.settlement.txHash,
+      }, 'price + decision fetched from agent (x402)')
 
-      if (!decision.should_execute) {
-        log.warn({ reasoning: decision.reasoning }, 'execution skipped by Claude')
-        return
-      }
-      if (decision.anomaly_detected) {
-        log.warn({ reasoning: decision.reasoning }, 'anomaly detected — proceeding with caution')
-      }
-      slippageBps = decision.slippage_bps
+      decision         = result.decision
+      routeResp        = result.route
+      settlementTxHash = result.settlement.txHash
     } else {
-      // No Claude: enforce PRD §9.1 gas ceiling deterministically
-      if (gasPriceGwei > config.maxGasGwei) {
-        throw new GasCeilingError(gasPriceGwei, config.maxGasGwei)
+      // Fallback: local price feed + local Claude safety check + local routing.
+      const priceResp = await this.x402.getPrice(config.x402PriceUrl, 'ETH')
+      log.info({
+        priceUsd:  priceResp.price_usdc,
+        change24h: `${priceResp.change_percent_24hr >= 0 ? '+' : ''}${priceResp.change_percent_24hr.toFixed(2)}%`,
+        source:    priceResp.source,
+      }, 'price fetched')
+
+      if (this.claude) {
+        decision = await this.claude.decide({
+          token:             'ETH',
+          priceUsdc:         priceResp.price_usdc,
+          changePercent24Hr: priceResp.change_percent_24hr,
+          amountUsdc:        formatUnits(sub.amountPerCycle, 6),
+          gasPriceGwei,
+        })
+      } else {
+        decision = {
+          should_execute:   true,
+          slippage_bps:     50,
+          anomaly_detected: false,
+          reasoning:        'deterministic fallback — no Claude safety oracle configured',
+        }
       }
+
+      routeResp = await this.x402.getRoute(
+        config.x402RoutingUrl,
+        sub.spendToken,
+        config.outputTokenAddr,
+        config.aggregatorAddr,
+        sub.amountPerCycle,
+      )
+      log.info({ outputAmount: routeResp.output_amount }, 'route fetched')
     }
 
-    // ── 7. Fetch swap route via x402 ─────────────────────────────────────────
-    const routeResp = await this.x402.getRoute(
-      config.x402RoutingUrl,
-      sub.spendToken,
-      config.outputTokenAddr,
-      config.aggregatorAddr,
-      sub.amountPerCycle,
-    )
-    log.info({ outputAmount: routeResp.output_amount }, 'route fetched')
+    log.info({
+      shouldExecute: decision.should_execute,
+      slippageBps:   decision.slippage_bps,
+      anomaly:       decision.anomaly_detected,
+      reasoning:     decision.reasoning,
+    }, 'execution decision')
 
-    // ── 8. Compute minOutputAmount from Claude's slippage ────────────────────
+    if (!decision.should_execute) {
+      log.warn({ reasoning: decision.reasoning }, 'execution skipped by decision')
+      return
+    }
+    if (decision.anomaly_detected) {
+      log.warn({ reasoning: decision.reasoning }, 'anomaly detected — proceeding with caution')
+    }
+
+    // ── 7. Compute minOutputAmount from the decision's slippage ───────────────
     const outputAmount    = BigInt(routeResp.output_amount)
-    const minOutputAmount = (outputAmount * BigInt(10_000 - slippageBps)) / 10_000n
+    const minOutputAmount = (outputAmount * BigInt(10_000 - decision.slippage_bps)) / 10_000n
 
-    // ── 9. ABI-encode SwapParams for SIPService ───────────────────────────────
+    // ── 8. ABI-encode SwapParams for SIPService ────────────────────────────────
     const params = encodeAbiParameters(
       [{ type: 'tuple', components: [
         { name: 'outputToken',     type: 'address' },
@@ -164,7 +203,7 @@ export class Executor {
       [{ outputToken: config.outputTokenAddr, minOutputAmount, swapData: routeResp.swap_data }],
     )
 
-    // ── 10. Broadcast execute() ───────────────────────────────────────────────
+    // ── 9. Broadcast execute() ───────────────────────────────────────────────
     // Do NOT wrap writeContract in withRetry — duplicate submissions would double-spend.
     let txHash: `0x${string}`
     try {
@@ -179,9 +218,9 @@ export class Executor {
       throw new ExecutionError(subId, err)
     }
 
-    log.info({ txHash }, 'tx submitted')
+    log.info({ txHash, decideSettlementTx: settlementTxHash }, 'tx submitted')
 
-    // ── 11. Wait for confirmation ─────────────────────────────────────────────
+    // ── 10. Wait for confirmation ──────────────────────────────────────────────
     const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: 60_000 })
 
     if (receipt.status === 'reverted') {

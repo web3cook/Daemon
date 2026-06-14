@@ -1,5 +1,6 @@
 import { apiGet, apiPost, type QueryParams } from "./client";
 import { billingIntervalSeconds } from "../contracts";
+import type { OneTimePermit } from "../useSubscribeOnChain";
 import type {
   AgentDetailDetails,
   AgentListDetails,
@@ -76,6 +77,8 @@ export interface InvokeAgentDetails {
     summary?: string;
     result?: string;
     generated_at?: string;
+    settlement?: { txHash?: string };
+    [key: string]: unknown;
   };
   receipt?: {
     amount?: { amount: string; currency: string };
@@ -84,12 +87,15 @@ export interface InvokeAgentDetails {
   };
 }
 
-export function invokeAgent(agentId: string, paramValues: Record<string, string>) {
-  return apiPost<InvokeAgentDetails>(
-    `/agents/${agentId}/invoke`,
-    { param_values: paramValues },
-    { "X-Payment": "poc-stub" },
-  );
+export function invokeAgent(
+  agentId: string,
+  paramValues: Record<string, string>,
+  permit: OneTimePermit,
+) {
+  return apiPost<InvokeAgentDetails>(`/agents/${agentId}/invoke`, {
+    param_values: paramValues,
+    permit,
+  });
 }
 
 // ── subscriptions & spendings (§5) ────────────────

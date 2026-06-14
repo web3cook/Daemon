@@ -6,8 +6,21 @@ import { newRunId } from '../ids.js'
 import { serializeAgentCard, type AgentRow } from '../serializers.js'
 import { config } from '../../config.js'
 import { findOrCreateUser } from '../userdb.js'
+import { buildClients } from '../../chain/client.js'
+import { X402Client } from '../../x402/client.js'
+import { logger } from '../../logger.js'
+import { Permit2ABI, PERMIT2_ADDRESS } from '../../contracts/index.js'
 
 export const marketplaceRouter = Router()
+
+const x402Clients = buildClients(config.rpcUrl, config.chainId, config.privateKey)
+const x402Client  = new X402Client(x402Clients, config.usdcAddr)
+
+interface PermitSingleInput {
+  details: { token: string; amount: string; expiration: number; nonce: number }
+  spender: string
+  sigDeadline: string
+}
 
 const VALID_CATEGORIES = new Set(['finance', 'productivity', 'career', 'engineering', 'research', 'other'])
 const VALID_SORTS = new Set(['popular', 'rating', 'price_asc', 'price_desc', 'newest'])
@@ -164,18 +177,31 @@ marketplaceRouter.get('/:onchain_agent_id/card.json', async (req, res) => {
   })
 })
 
-// POST /agents/:agent_id/invoke (POC: stubbed one-time run, paid via X-Payment header)
+// POST /agents/:agent_id/invoke — runs a one-time agent's paid x402 endpoint.
+// The platform wallet settles the agent's fee on-chain (USDC.transferFrom),
+// and the agent's computed output is returned directly to the caller.
 marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
   const { agent_id } = req.params
-  const paramValues = (req.body as { param_values?: Record<string, string> })?.param_values ?? {}
+  const body = req.body as {
+    param_values?: Record<string, string>
+    permit?: { owner: string; permitSingle: PermitSingleInput; signature: string }
+  }
+  const paramValues = body.param_values ?? {}
+  const permit = body.permit
 
-  if (!req.header('x-payment')) {
+  if (!permit) {
     fail(res, 402, 'Payment required', { error_code: 'payment_required' })
     return
   }
 
-  const agentRes = await query<{ agent_id: string; name: string; mode: string; one_time_price_amount: string | null }>(
-    `SELECT agent_id, name, mode, one_time_price_amount FROM agents WHERE agent_id = $1`,
+  const agentRes = await query<{
+    agent_id: string; name: string; mode: string
+    one_time_price_amount: string | null; endpoint_url: string | null
+    creator_address: string | null
+  }>(
+    `SELECT a.agent_id, a.name, a.mode, a.one_time_price_amount, a.endpoint_url, u.user_address AS creator_address
+     FROM agents a LEFT JOIN users u ON u.user_id = a.publisher_user_id
+     WHERE a.agent_id = $1`,
     [agent_id],
   )
   const agent = agentRes.rows[0]
@@ -183,15 +209,88 @@ marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
     fail(res, 404, 'Agent not found', {})
     return
   }
+  if (!agent.endpoint_url) {
+    fail(res, 502, 'Agent has no endpoint configured', { error_code: 'no_endpoint' })
+    return
+  }
+  if (!agent.one_time_price_amount || !agent.creator_address) {
+    fail(res, 502, 'Agent is not configured for one-time payments', { error_code: 'no_payout_address' })
+    return
+  }
+
+  // ── Pull the one-time fee from the subscriber to the creator's wallet ────
+  // via Permit2: the subscriber signed a PermitSingle naming the platform
+  // wallet as spender; we submit it on-chain, then pull the funds.
+  const owner   = permit.owner as `0x${string}`
+  const creator = agent.creator_address as `0x${string}`
+  const ps      = permit.permitSingle
+  const permitSingle = {
+    details: {
+      token:      ps.details.token as `0x${string}`,
+      amount:     BigInt(ps.details.amount),
+      expiration: ps.details.expiration,
+      nonce:      ps.details.nonce,
+    },
+    spender:     ps.spender as `0x${string}`,
+    sigDeadline: BigInt(ps.sigDeadline),
+  }
+
+  let paymentTxHash: `0x${string}`
+  try {
+    await x402Clients.walletClient.writeContract({
+      address: PERMIT2_ADDRESS,
+      abi: Permit2ABI,
+      functionName: 'permit',
+      args: [owner, permitSingle, permit.signature as `0x${string}`],
+      account: x402Clients.account,
+      chain: x402Clients.chain,
+    }).then(hash => x402Clients.publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 }))
+
+    paymentTxHash = await x402Clients.walletClient.writeContract({
+      address: PERMIT2_ADDRESS,
+      abi: Permit2ABI,
+      functionName: 'transferFrom',
+      args: [owner, creator, permitSingle.details.amount, permitSingle.details.token],
+      account: x402Clients.account,
+      chain: x402Clients.chain,
+    })
+    await x402Clients.publicClient.waitForTransactionReceipt({ hash: paymentTxHash, timeout: 60_000 })
+  } catch (err) {
+    logger.error({ err, agent_id }, 'invoke: subscriber payment (Permit2) failed')
+    fail(res, 402, 'Payment failed — approve USDC to Permit2 and try again', { error_code: 'payment_failed' })
+    return
+  }
+
+  logger.info({ agent_id, owner, creator, paymentTxHash }, 'invoke: subscriber payment settled')
+
+  let output: unknown
+  try {
+    const invokeUrl = `${agent.endpoint_url.replace(/\/$/, '')}/v1/invoke`
+    output = await x402Client.invoke(invokeUrl, paramValues)
+  } catch (err) {
+    logger.error({ err, agent_id }, 'invoke: agent x402 call failed')
+    fail(res, 502, 'Agent invocation failed', { error_code: 'agent_unreachable' })
+    return
+  }
+
+  // Record the run for the subscriber's portfolio + creator earnings.
+  const user = await findOrCreateUser(owner)
+  await query(
+    `INSERT INTO runs (run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, ran_at)
+     VALUES ($1, $2, $3, NULL, 'one_time', $4, 'USDC', $5, NULL, true, $6, now())`,
+    [newRunId(), agent.agent_id, user.user_id, agent.one_time_price_amount, `Ran ${agent.name}`, paymentTxHash],
+  )
 
   ok(res, 200, 'Run completed', {
     invocation_id: newRunId(),
     status: 'completed',
     agent: { agent_id: agent.agent_id, name: agent.name },
     inputs: paramValues,
-    output: {
-      summary: `${agent.name} ran successfully.`,
-      generated_at: new Date().toISOString(),
+    output,
+    receipt: {
+      amount: { amount: agent.one_time_price_amount, currency: 'USDC' },
+      tx_hash: paymentTxHash,
+      settled_at: new Date().toISOString(),
     },
   })
 })

@@ -48,7 +48,7 @@ const AGENTS: SeedAgent[] = [
     one_time_price_amount: null,
     service_address: '0x102bA9E4Ad057EFE5233B77c09B6DBb2Df6fFa09',
     onchain_agent_id: '1',
-    endpoint_url: 'http://localhost:8402'
+    endpoint_url: 'http://agent_dca:8402'
   },
   {
     slug: 'tidy',

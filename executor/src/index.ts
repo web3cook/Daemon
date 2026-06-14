@@ -19,14 +19,12 @@ process.on('unhandledRejection', (reason: unknown) => {
 })
 
 async function main(): Promise<void> {
-  const chainName = config.chainId === 421614 ? 'arbitrum-sepolia' : 'arbitrum-one'
-
   // ── Chain clients ──────────────────────────────────────────────────────────
   const clients = buildClients(config.rpcUrl, config.chainId, config.privateKey)
   logger.info({ chainId: config.chainId, address: clients.account.address }, 'chain connected')
 
   // ── x402 + Claude ──────────────────────────────────────────────────────────
-  const x402Client = new X402Client(clients.account.address, chainName)
+  const x402Client = new X402Client(clients, config.usdcAddr)
   const claude     = config.anthropicApiKey ? new ClaudeAgent(config.anthropicApiKey) : null
   logger.info({ claudeEnabled: claude !== null }, 'safety oracle initialised')
 

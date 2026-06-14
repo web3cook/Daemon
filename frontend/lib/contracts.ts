@@ -16,6 +16,10 @@ export const SUBSCRIPTIONS_ADDRESS = process.env
 
 export const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as | `0x${string}` | undefined;
 
+/** Platform wallet that settles one-time agent payments (Permit2 spender). */
+export const PLATFORM_WALLET_ADDRESS = process.env
+  .NEXT_PUBLIC_PLATFORM_WALLET_ADDRESS as `0x${string}` | undefined;
+
 export const USDC_DECIMALS = 6;
 
 /** Canonical Permit2, same address on every EVM chain. */
