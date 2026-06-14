@@ -1,0 +1,124 @@
+x-backend-env: &backend-env
+  # Database
+  DATABASE_URL: postgres://sip:sip@postgres:5432/sip_daemon
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  API_PORT: "3001"
+  CORS_ORIGIN: http://localhost:3000
+  RPC_URL: https://sepolia-rollup.arbitrum.io/rpc
+  CHAIN_ID: "421614"
+  PRIVATE_KEY: "0x2b65f250e2a69f06bbf834466c8f09ea1b6dea509d3586af2979fd11567679cd"
+  SUBSCRIPTIONS_ADDR: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed"
+  SERVICE_FACTORY_ADDR: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3"
+  IDENTITY_REGISTRY_ADDR: "0x4517993f49F30F1Cc71ebE2e083c91fA41EeFa45"
+  VALIDATION_REGISTRY_ADDR: "0xb3E35540bb8862ac3b4A80Ac80ecbe7eC90b185b"
+  AGGREGATOR_ADDR: "0xe4CB3caAA49c61F2593370138DEC7fdfd0643Cf7"
+  USDC_ADDR: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
+  OUTPUT_TOKEN_ADDR: "0xe8D355544f832B731D7Bd040B8D6d4eE959b6401"
+  MOCK_X402_ENABLED: "false"
+  # Block just before the current contracts were deployed (run-1781424293207.json,
+  # first receipt at block 277075766). Starting at 0 would mean ~277M blocks to
+  # scan in 10k-block chunks before any agent events are found.
+  INDEXER_START_BLOCK: "277075700"
+  INDEXER_POLL_SECS: "20"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sip
+      POSTGRES_PASSWORD: sip
+      POSTGRES_DB: sip_daemon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sip -d sip_daemon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  indexer:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["npm", "run", "start"]
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  # Mock x402 facilitator (price + route endpoints) used by the executor to
+  # price and route agent payments. Runs the agent-side daemon for the
+  # NightWatchCCC agent registered via the creator flow.
+  # agents:
+  #   build:
+  #     context: ./agents
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8402:8402"
+  #   environment:
+  #     PRIVATE_KEY: "0x1"
+  #     USDC_ADDR: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
+  #     CHAIN_ID: "421614"
+  #     MOCK_X402_PORT: "8402"
+
+  # Executes due subscriptions on-chain (Subscriptions.execute) for the
+  # NightWatchCCC agent (onchain_agent_id=4, service
+  # 0x5cC2D7099d1f3f41c4204D22AECa91e065CcCa25), polling the shared DB on a
+  # fixed interval.
+  # executor:
+  #   build:
+  #     context: ./executor
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     <<: *backend-env
+  #     AGENT_ID: "4"
+  #     MIN_TRUST_SCORE: "50"
+  #     MAX_GAS_GWEI: "0.1"
+  #     SCHEDULER_INTERVAL_SECS: "30"
+  #     MOCK_X402_ENABLED: "true"
+  #     X402_PRICE_URL: "http://agents:8402/price"
+  #     X402_ROUTING_URL: "http://agents:8402/route"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     backend:
+  #       condition: service_started
+  #     agents:
+  #       condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* values are baked into the bundle at build time —
+      # they must be build args, not runtime environment.
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:3001/api/v1
+        NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3"
+        NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed"
+        NEXT_PUBLIC_USDC_ADDRESS: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
+        NEXT_PUBLIC_WC_PROJECT_ID: "a18b96e3dc8664c11e0c480c08f4149f"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

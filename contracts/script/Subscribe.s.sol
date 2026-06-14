@@ -40,14 +40,15 @@ contract Subscribe is Script {
     );
 
     function run() external {
-        // DCA parameters — read from env, fall back to defaults
+        // DCA parameters — read from env, fall back to defaults.
+        // INTERVAL_SECS must match the service's configured interval exactly.
         uint256 spendPerCycle = vm.envOr("SPEND_PER_CYCLE", uint256(10e6));
         uint256 intervalSecs  = vm.envOr("INTERVAL_SECS",   uint256(5 minutes));
         uint48  windowSecs    = uint48(vm.envOr("WINDOW_SECS", uint256(2 hours)));
         // ── load deployed addresses ───────────────────────────────────────────
         string memory json = vm.readFile("./deployments/arbitrum-sepolia.json");
-        address mockUSDC      = vm.parseJsonAddress(json, ".mockUSDC");
-        address mockWETH      = vm.parseJsonAddress(json, ".mockWETH");
+        address mockUsdc      = vm.parseJsonAddress(json, ".mockUSDC");
+        address mockWeth      = vm.parseJsonAddress(json, ".mockWETH");
         address subscriptions = vm.parseJsonAddress(json, ".subscriptions");
         address sipService    = vm.parseJsonAddress(json, ".sipService");
         address permit2Addr   = vm.parseJsonAddress(json, ".permit2");
@@ -58,7 +59,7 @@ contract Subscribe is Script {
         console.log("Subscriber:    ", subscriber);
         console.log("Subscriptions: ", subscriptions);
         console.log("SIPService:    ", sipService);
-        console.log("Output token:  ", mockWETH);
+        console.log("Output token:  ", mockWeth);
 
         // ── compute how much permit allowance is needed ───────────────────────
         // Permit2 has ONE allowance slot per (owner, token, spender).
@@ -79,10 +80,10 @@ contract Subscribe is Script {
         vm.startBroadcast(subscriberKey);
 
         // Mint exactly enough mockUSDC for this subscription's window
-        TestERC20(mockUSDC).mint(subscriber, mintAmount);
+        TestERC20(mockUsdc).mint(subscriber, mintAmount);
 
         // One-time max approval to Permit2 (covers all future subscriptions)
-        TestERC20(mockUSDC).approve(permit2Addr, type(uint256).max);
+        TestERC20(mockUsdc).approve(permit2Addr, type(uint256).max);
 
         vm.stopBroadcast();
 
@@ -90,11 +91,11 @@ contract Subscribe is Script {
         IPermit2Full p2 = IPermit2Full(permit2Addr);
 
         // Read current nonce from Permit2 (increments after each permit call)
-        (, , uint48 p2Nonce) = p2.allowance(subscriber, mockUSDC, subscriptions);
+        (, , uint48 p2Nonce) = p2.allowance(subscriber, mockUsdc, subscriptions);
 
         IPermit2.PermitSingle memory permit = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
-                token:      mockUSDC,
+                token:      mockUsdc,
                 amount:     permitAmount,
                 expiration: expiry,
                 nonce:      p2Nonce
@@ -129,17 +130,18 @@ contract Subscribe is Script {
         vm.startBroadcast(subscriberKey);
         Subscriptions(subscriptions).subscribe(
             sipService,
-            mockUSDC,
+            mockUsdc,
             spendPerCycle,
             intervalSecs,
             permit,
-            sig
+            sig,
+            bytes("") // extra service params — SIPService accepts any
         );
         vm.stopBroadcast();
 
         // ── print subscription ID ─────────────────────────────────────────────
         uint256 nonce = Subscriptions(subscriptions).nonces(subscriber) - 1;
-        bytes32 subId = keccak256(abi.encode(subscriber, sipService, mockUSDC, nonce));
+        bytes32 subId = keccak256(abi.encode(subscriber, sipService, mockUsdc, nonce));
 
         console.log("\nSubscription created!");
         console.log("Per cycle (USDC):", spendPerCycle);

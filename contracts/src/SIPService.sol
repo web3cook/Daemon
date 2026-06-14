@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable}        from "@openzeppelin/contracts/utils/Pausable.sol";
-import {Ownable2Step}    from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {Ownable}         from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC20}          from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20}       from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IService}        from "./interfaces/IService.sol";
+import {Pausable}  from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20}    from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Service}   from "./Service.sol";
 
 struct SwapParams {
     address outputToken;
@@ -15,149 +12,133 @@ struct SwapParams {
     bytes   swapData;
 }
 
-error ZeroAddress();
-error ZeroAmount();
-error NotSubscriptions();
-error TokenNotWhitelisted(address token);
-error TokenAlreadyWhitelisted(address token);
-error SlippageExceeded(uint256 received, uint256 minimum);
-error SwapFailed();
-error FeeTooHigh(uint256 given, uint256 max);
-
-contract SIPService is IService, Ownable2Step, ReentrancyGuard, Pausable {
+/// @title SIPService
+/// @notice DCA swap service built on the Service base. Each cycle it receives
+///         spendToken from Subscriptions, keeps a protocol fee (held in the
+///         contract until withdraw() sweeps it to feeReceiver), swaps the rest
+///         via the aggregator and forwards the output token to the subscriber.
+///         Unlike the base Service, the configured `amount` is a minimum
+///         per-cycle spend — DCA subscribers choose their own amount.
+contract SIPService is Service, Pausable {
     using SafeERC20 for IERC20;
 
-    address public immutable subscriptions;
-    uint256 public immutable MAX_FEE_BPS;
-
+    uint256 public immutable MAX_FEE;
     address public aggregator;
-    address public treasury;
-    uint256 public feeBps;
-
+    uint256 public fee;
+    uint256 public maxFeeAmount;
     mapping(address => bool) public outputTokens;
 
-    event SwapExecuted(
-        address indexed subscriber,
-        address indexed outputToken,
-        uint256 amountSpent,
-        uint256 amountReceived,
-        uint256 feeCharged
-    );
-    event FeeUpdated(uint256 oldBps, uint256 newBps);
-    event AggregatorUpdated(address oldAggregator, address newAggregator);
-    event TreasuryUpdated(address oldTreasury, address newTreasury);
+    event FeeUpdated(uint256 indexed old, uint256 indexed newFee);
+    event MaxFeeAmountUpdated(uint256 indexed old, uint256 indexed newMax);
+    event AggregatorUpdated(address indexed oldAggregator, address indexed newAggregator);
     event TokenAdded(address indexed token);
     event TokenRemoved(address indexed token);
-    event Swept(address indexed token, address indexed to, uint256 amount);
+    event SwapExecuted(address indexed subscriber, address indexed spendToken, address indexed outputToken, uint256 amountSpent, uint256 amountReceived, uint256 fee);
 
-    modifier onlySubscriptions() {
-        if (msg.sender != subscriptions) revert NotSubscriptions();
-        _;
-    }
+    error SlippageExceeded(uint256 received, uint256 minimum);
+    error TokenNotWhitelisted(address token);
+    error TokenAlreadyWhitelisted(address token);
+    error SwapFailed();
+    error FeeTooHigh(uint256 given, uint256 max);
 
     constructor(
         address _subscriptions,
-        address _treasury,
-        address _aggregator,
-        uint256 _maxFeeBps
-    ) Ownable(msg.sender) {
-        if (_subscriptions == address(0)) revert ZeroAddress();
-        if (_treasury      == address(0)) revert ZeroAddress();
-        if (_aggregator    == address(0)) revert ZeroAddress();
-
-        subscriptions = _subscriptions;
-        treasury      = _treasury;
-        aggregator    = _aggregator;
-        MAX_FEE_BPS   = _maxFeeBps;
+        address _feeReceiver,
+        address _spendToken,
+        uint256 _minAmountPerCycle,
+        uint32  _interval,
+        uint256 _agentId,
+        uint256 _maxFee,
+        address _aggregator
+    ) Service(msg.sender, _subscriptions, _feeReceiver, _spendToken, _minAmountPerCycle, _interval, _agentId) {
+        if (_aggregator == address(0)) revert ZeroAddress();
+        MAX_FEE    = _maxFee;
+        aggregator = _aggregator;
     }
 
-    /// @notice Execute a DCA swap on behalf of a subscriber. Called only by Subscriptions.
-    /// @param subscriber Recipient of the output tokens after the swap.
-    /// @param spendToken Input token already transferred to this contract by Subscriptions.
-    /// @param amount     Amount of spendToken available; protocol fee is deducted before swap.
-    /// @param params     ABI-encoded SwapParams: outputToken, minOutputAmount, swapData.
-    function execute(
-        address        subscriber,
-        address        spendToken,
-        uint256        amount,
-        bytes calldata params
-    ) external onlySubscriptions nonReentrant whenNotPaused returns (bool) {
-        if (amount == 0) revert ZeroAmount();
-
-        SwapParams memory p = abi.decode(params, (SwapParams));
-        if (!outputTokens[p.outputToken]) revert TokenNotWhitelisted(p.outputToken);
-        if (p.minOutputAmount == 0)       revert ZeroAmount();
-
-        uint256 feeAmount  = feeBps > 0 ? (amount * feeBps / 10_000) : 0;
-        uint256 swapAmount = amount - feeAmount;
-
-        if (feeAmount > 0) {
-            IERC20(spendToken).safeTransfer(treasury, feeAmount);
-        }
-
-        uint256 balanceBefore = IERC20(p.outputToken).balanceOf(address(this));
-
-        // Approve → swap → reset approval; approval scoped tightly to this call
-        IERC20(spendToken).forceApprove(aggregator, swapAmount);
-        (bool success, ) = aggregator.call(p.swapData);
-        if (!success) revert SwapFailed();
-        IERC20(spendToken).forceApprove(aggregator, 0);
-
-        uint256 received = IERC20(p.outputToken).balanceOf(address(this)) - balanceBefore;
-        if (received < p.minOutputAmount) revert SlippageExceeded(received, p.minOutputAmount);
-
-        IERC20(p.outputToken).safeTransfer(subscriber, received);
-
-        emit SwapExecuted(subscriber, p.outputToken, amount, received, feeAmount);
-
-        return true;
+    function setFee(uint256 _newFee) external onlyOwner {
+        if (_newFee > MAX_FEE) revert FeeTooHigh(_newFee, MAX_FEE);
+        emit FeeUpdated(fee, _newFee);
+        fee = _newFee;
     }
 
-    /// @notice Update the protocol fee in basis points. Cannot exceed MAX_FEE_BPS.
-    function setFee(uint256 _newBps) external onlyOwner {
-        if (_newBps > MAX_FEE_BPS) revert FeeTooHigh(_newBps, MAX_FEE_BPS);
-        emit FeeUpdated(feeBps, _newBps);
-        feeBps = _newBps;
+    function setMaxFeeAmount(uint256 _maxFeeAmount) external onlyOwner {
+        emit MaxFeeAmountUpdated(maxFeeAmount, _maxFeeAmount);
+        maxFeeAmount = _maxFeeAmount;
     }
 
-    /// @notice Replace the DEX aggregator that receives swap calldata.
-    function setAggregator(address _new) external onlyOwner {
-        if (_new == address(0)) revert ZeroAddress();
-        emit AggregatorUpdated(aggregator, _new);
-        aggregator = _new;
+    function setAggregator(address _newAggregator) external onlyOwner {
+        if (_newAggregator == address(0)) revert ZeroAddress();
+        emit AggregatorUpdated(aggregator, _newAggregator);
+        aggregator = _newAggregator;
     }
 
-    /// @notice Update the treasury address that receives protocol fees.
-    function setTreasury(address _new) external onlyOwner {
-        if (_new == address(0)) revert ZeroAddress();
-        emit TreasuryUpdated(treasury, _new);
-        treasury = _new;
+    function addToken(address _token) external onlyOwner {
+        if (_token == address(0)) revert ZeroAddress();
+        if (outputTokens[_token]) revert TokenAlreadyWhitelisted(_token);
+        outputTokens[_token] = true;
+        emit TokenAdded(_token);
     }
 
-    /// @notice Add a token to the output-token whitelist.
-    function addToken(address token) external onlyOwner {
-        if (token == address(0))  revert ZeroAddress();
-        if (outputTokens[token])  revert TokenAlreadyWhitelisted(token);
-        outputTokens[token] = true;
-        emit TokenAdded(token);
-    }
-
-    /// @notice Remove a token from the output-token whitelist.
-    function removeToken(address token) external onlyOwner {
-        if (!outputTokens[token]) revert TokenNotWhitelisted(token);
-        outputTokens[token] = false;
-        emit TokenRemoved(token);
-    }
-
-    /// @notice Rescue any tokens stuck in this contract.
-    function sweep(address token, address to) external onlyOwner nonReentrant {
-        if (to == address(0)) revert ZeroAddress();
-        uint256 bal = IERC20(token).balanceOf(address(this));
-        if (bal == 0) revert ZeroAmount();
-        IERC20(token).safeTransfer(to, bal);
-        emit Swept(token, to, bal);
+    function removeToken(address _token) external onlyOwner {
+        if (!outputTokens[_token]) revert TokenNotWhitelisted(_token);
+        outputTokens[_token] = false;
+        emit TokenRemoved(_token);
     }
 
     function pause()   external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Subscribe-time validation. Token must match the configured
+    ///         spendToken; interval must match; the per-cycle amount only has
+    ///         to meet the configured minimum, since DCA subscribers pick their own size.
+    function userRegistered(
+        address        /* subscriber */,
+        address        _spendToken,
+        uint256        _amount,
+        uint256        _interval,
+        bytes calldata /* params */
+    ) external view override onlySubscriptions returns (bool) {
+        if (_spendToken != spendToken) revert TokenMismatch(spendToken, _spendToken);
+        if (_amount < amount)          revert AmountMismatch(amount, _amount);
+        if (_interval != interval)     revert IntervalMismatch(interval, _interval);
+        return true;
+    }
+
+    function execute(
+        address        subscriber,
+        address        _spendToken,
+        uint256        _amount,
+        bytes calldata params
+    ) external override onlySubscriptions nonReentrant whenNotPaused returns (bool) {
+        if (_amount == 0) revert ZeroAmount();
+
+        SwapParams memory p = abi.decode(params, (SwapParams));
+        if (!outputTokens[p.outputToken]) revert TokenNotWhitelisted(p.outputToken);
+        if (p.minOutputAmount == 0) revert ZeroAmount();
+
+        // Protocol fee stays in the contract; withdraw() sweeps it to feeReceiver.
+        uint256 feeAmount = _amount * fee / 10_000;
+        if (maxFeeAmount > 0 && feeAmount > maxFeeAmount) {
+            feeAmount = maxFeeAmount;
+        }
+        uint256 swapAmount = _amount - feeAmount;
+        totalEarned += feeAmount;
+
+        uint256 balanceBefore = IERC20(p.outputToken).balanceOf(address(this));
+
+        IERC20(_spendToken).forceApprove(aggregator, swapAmount);
+        (bool success, ) = aggregator.call(p.swapData);
+        if (!success) revert SwapFailed();
+        IERC20(_spendToken).forceApprove(aggregator, 0);
+
+        uint256 received = IERC20(p.outputToken).balanceOf(address(this)) - balanceBefore;
+        if (received < p.minOutputAmount) revert SlippageExceeded(received, p.minOutputAmount);
+
+        emit SwapExecuted(subscriber, _spendToken, p.outputToken, _amount, received, feeAmount);
+
+        IERC20(p.outputToken).safeTransfer(subscriber, received);
+
+        return true;
+    }
 }

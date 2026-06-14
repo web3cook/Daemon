@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console}               from "forge-std/Script.sol";
 import {Subscriptions, Subscription}   from "../src/Subscriptions.sol";
-import {SIPService, SwapParams}        from "../src/SIPService.sol";
+import {SwapParams}                    from "../src/SIPService.sol";
 import {TestERC20, TestAggregator}     from "./helpers/MockContracts.sol";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,11 +35,9 @@ contract Execute is Script {
     function run() external {
         // ── load deployed addresses ───────────────────────────────────────────
         string memory json = vm.readFile("./deployments/arbitrum-sepolia.json");
-        address mockUSDC      = vm.parseJsonAddress(json, ".mockUSDC");
-        address mockWETH      = vm.parseJsonAddress(json, ".mockWETH");
-        address aggregator    = vm.parseJsonAddress(json, ".aggregator");
+        address mockUsdc      = vm.parseJsonAddress(json, ".mockUSDC");
+        address mockWeth      = vm.parseJsonAddress(json, ".mockWETH");
         address subscriptions = vm.parseJsonAddress(json, ".subscriptions");
-        address sipService    = vm.parseJsonAddress(json, ".sipService");
 
         bytes32 subId       = vm.envBytes32("SUBSCRIPTION_ID");
         uint256 executorKey = vm.envUint("PRIVATE_KEY");
@@ -81,21 +79,21 @@ contract Execute is Script {
         // It will: pull spendAmount from SIPService, mint outputAmount to SIPService
         bytes memory swapData = abi.encodeWithSelector(
             TestAggregator.swap.selector,
-            mockUSDC,
+            mockUsdc,
             spendAmount,
-            mockWETH,
+            mockWeth,
             outputAmount
         );
 
         bytes memory params = abi.encode(SwapParams({
-            outputToken:     mockWETH,
+            outputToken:     mockWeth,
             minOutputAmount: minOutput,
             swapData:        swapData
         }));
 
         // ── snapshot balance before ───────────────────────────────────────────
-        uint256 wethBefore = TestERC20(mockWETH).balanceOf(sub.subscriber);
-        uint256 usdcBefore = TestERC20(mockUSDC).balanceOf(sub.subscriber);
+        uint256 wethBefore = TestERC20(mockWeth).balanceOf(sub.subscriber);
+        uint256 usdcBefore = TestERC20(mockUsdc).balanceOf(sub.subscriber);
 
         // ── execute ───────────────────────────────────────────────────────────
         vm.startBroadcast(executorKey);
@@ -103,8 +101,8 @@ contract Execute is Script {
         vm.stopBroadcast();
 
         // ── print results ─────────────────────────────────────────────────────
-        uint256 wethAfter = TestERC20(mockWETH).balanceOf(sub.subscriber);
-        uint256 usdcAfter = TestERC20(mockUSDC).balanceOf(sub.subscriber);
+        uint256 wethAfter = TestERC20(mockWeth).balanceOf(sub.subscriber);
+        uint256 usdcAfter = TestERC20(mockUsdc).balanceOf(sub.subscriber);
 
         console.log("\n=== Execution complete ===");
         console.log("USDC spent:        ", usdcBefore - usdcAfter);

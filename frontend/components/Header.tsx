@@ -31,10 +31,15 @@ export default function Header() {
   return (
     <header className="header">
       <div className="header-inner">
-        <div className="logo">
+        <button
+          type="button"
+          className="logo"
+          aria-label="daemon home"
+          onClick={() => router.push("/")}
+        >
           <div className="logo-mark">&gt;_</div>
           <div className="logo-word">daemon</div>
-        </div>
+        </button>
 
         <div className="role-switch">
           <button
@@ -64,7 +69,7 @@ export default function Header() {
         </nav>
 
         <div className="header-right">
-          <a href="#" className="docs-link">
+          <a href="/docs" className="docs-link">
             docs ↗
           </a>
           {wallet ? (

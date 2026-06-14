@@ -1,29 +1,41 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { agentById, USAGE_MAP } from "@/lib/agents";
+import { useUserRuns, useUserSubscriptions } from "@/lib/api/hooks";
+import { formatDate, formatMoney } from "@/lib/api/format";
+import Avatar from "@/components/Avatar";
+import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
 
 export default function SubscriptionsPage() {
   const router = useRouter();
-  const { subs, wallet, cancelSub, openWalletModal } = useApp();
+  const { wallet, openWalletModal, cancelSub } = useApp();
+  const address = wallet?.address;
 
-  const mySubs = Object.keys(subs)
-    .map((id) => {
-      const agent = agentById(id);
-      if (!agent) return null;
-      const plan = agent.plans.find((p) => p.name === subs[id]) ?? agent.plans[0];
-      return { agent, plan };
-    })
-    .filter((s) => s !== null);
+  const subsQuery = useUserSubscriptions(address);
+  const runsQuery = useUserRuns(address);
 
-  const monthlyTotal = mySubs.reduce((sum, s) => sum + s.plan.price, 0);
+  if (!wallet) {
+    return (
+      <div>
+        <div className="page-head">
+          <div className="kicker">{"// MY SUBSCRIPTIONS"}</div>
+          <h1 className="page-title">Your agents</h1>
+          <p className="page-sub">Connect a wallet to see your subscriptions and activity.</p>
+        </div>
+        <EmptyState title="No wallet connected" sub="Connect to view the agents you’ve put to work.">
+          <button className="btn-primary" onClick={openWalletModal}>
+            connect wallet
+          </button>
+        </EmptyState>
+      </div>
+    );
+  }
 
-  const invoices = [
-    { date: "Jun 1, 2026", desc: "Monthly subscriptions", amount: `$${monthlyTotal}.00` },
-    { date: "May 1, 2026", desc: "Monthly subscriptions", amount: "$12.00" },
-    { date: "Apr 1, 2026", desc: "Monthly subscriptions", amount: "$12.00" },
-  ];
+  const subs = subsQuery.data?.subscriptions ?? [];
+  const summary = subsQuery.data?.summary;
+  const runs = runsQuery.data?.runs ?? [];
+  const totalSpent = runsQuery.data?.summary?.total_spent;
 
   return (
     <div>
@@ -31,92 +43,114 @@ export default function SubscriptionsPage() {
         <div className="kicker">{"// MY SUBSCRIPTIONS"}</div>
         <h1 className="page-title">Your agents</h1>
         <p className="page-sub">
-          {mySubs.length} active {mySubs.length === 1 ? "subscription" : "subscriptions"} · $
-          {monthlyTotal}/mo
+          {summary
+            ? `${summary.active_count} active ${
+                summary.active_count === 1 ? "subscription" : "subscriptions"
+              } · ${formatMoney(summary.monthly_total)}/mo`
+            : "-"}
         </p>
       </div>
 
-      {mySubs.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-title">No active subscriptions</div>
-          <div className="empty-sub">Browse the marketplace to put an agent to work.</div>
+      {subsQuery.isLoading && <LoadingState label="loading subscriptions…" />}
+      {subsQuery.isError && (
+        <ErrorState error={subsQuery.error} onRetry={() => subsQuery.refetch()} />
+      )}
+      {!subsQuery.isLoading && !subsQuery.isError && subs.length === 0 && (
+        <EmptyState
+          title="No active subscriptions"
+          sub="Browse the marketplace to put an agent to work."
+        >
           <button className="btn-primary" onClick={() => router.push("/")}>
             browse marketplace
           </button>
-        </div>
-      ) : (
+        </EmptyState>
+      )}
+
+      {subs.length > 0 && (
         <div className="row-stack subs">
-          {mySubs.map(({ agent, plan }) => (
-            <div key={agent.id} className="row-card">
-              <div className="avatar">{agent.av}</div>
-              <div className="row-id">
-                <div className="row-title">{agent.name}</div>
-                <div className="row-sub">{plan.name} plan</div>
+          {subs.map((s) => {
+            const price = s.next_payment_amount ?? s.last_payment_amount;
+            const period =
+              s.billing_interval === "weekly"
+                ? "wk"
+                : s.billing_interval === "test_5min"
+                  ? "5min"
+                  : "mo";
+            return (
+              <div key={s.id} className="row-card">
+                <Avatar name={s.agent} logo={s.logo} />
+                <div className="row-id">
+                  <div className="row-title">{s.agent}</div>
+                  <div className="row-sub">{s.billing_interval}</div>
+                </div>
+                <div className="active-tag">
+                  <div className="dot sm" />
+                  {s.status}
+                </div>
+                <div className="spacer" />
+                {price && (
+                  <div className="row-price">
+                    {formatMoney(price, { cents: false })}
+                    <span className="price-unit">/{period}</span>
+                  </div>
+                )}
+                <button
+                  className="btn-ghost"
+                  onClick={() => router.push(`/agents/${s.agent_id}`)}
+                >
+                  manage
+                </button>
+                {s.status === "active" && (
+                  <button className="btn-quiet" onClick={() => cancelSub(s.id, s.agent)}>
+                    cancel
+                  </button>
+                )}
               </div>
-              <div className="active-tag">
-                <div className="dot sm" />
-                active
-              </div>
-              <div className="spacer" />
-              <div className="usage-note">{USAGE_MAP[agent.id] ?? "active this month"}</div>
-              <div className="row-price">
-                ${plan.price}
-                <span className="price-unit">/mo</span>
-              </div>
-              <button
-                className="btn-ghost"
-                onClick={() => router.push(`/agents/${agent.id}`)}
-              >
-                manage
-              </button>
-              <button className="btn-quiet" onClick={() => cancelSub(agent.id)}>
-                cancel
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       <div className="billing-grid">
         <div className="billing-card">
-          <div className="section-label">PAYMENT — WALLET</div>
-          {wallet ? (
-            <>
-              <div className="wallet-line">
-                <div className="dot" />
-                <div className="wallet-addr">{wallet.addr}</div>
-              </div>
-              <div className="billing-note balance">
-                usdc balance · <span className="strong">$142.50</span>
-              </div>
-              <div className="billing-note">
-                Next charge: <span className="strong">${monthlyTotal}.00</span> on Jul 1, 2026
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="billing-empty">
-                No wallet connected. Connect to manage billing.
-              </div>
-              <button className="connect-btn" onClick={openWalletModal}>
-                connect wallet
-              </button>
-            </>
-          )}
+          <div className="section-label">PAYMENT · WALLET</div>
+          <div className="wallet-line">
+            <div className="dot" />
+            <div className="wallet-addr">{wallet.addr}</div>
+          </div>
+          <div className="billing-note balance">
+            total spent ·{" "}
+            <span className="strong">
+              {totalSpent ? formatMoney(totalSpent, { cents: true }) : "$0.00"}
+            </span>
+          </div>
+          <div className="billing-note">
+            Subscriptions pull USDC directly from your wallet each cycle. Nothing is custodied.
+          </div>
         </div>
 
         <div className="billing-card">
-          <div className="section-label">INVOICES</div>
-          <div className="invoice-list">
-            {invoices.map((inv) => (
-              <div key={inv.date} className="invoice-row">
-                <div className="invoice-date">{inv.date}</div>
-                <div className="invoice-desc">{inv.desc}</div>
-                <div className="invoice-amt">{inv.amount}</div>
-                <div className="pill ok">paid</div>
-              </div>
-            ))}
-          </div>
+          <div className="section-label">ACTIVITY</div>
+          {runsQuery.isLoading && <div className="billing-note">loading activity…</div>}
+          {runsQuery.isError && <div className="billing-note">Couldn’t load activity.</div>}
+          {!runsQuery.isLoading && !runsQuery.isError && runs.length === 0 && (
+            <div className="billing-note">No runs yet.</div>
+          )}
+          {runs.length > 0 && (
+            <div className="invoice-list">
+              {runs.map((r) => (
+                <div key={r.run_id} className="invoice-row">
+                  <div className="invoice-date">{formatDate(r.ran_at)}</div>
+                  <div className="invoice-desc">
+                    {r.agent}
+                    {r.status_message ? ` · ${r.status_message}` : ""}
+                  </div>
+                  <div className="invoice-amt">{formatMoney(r.amount, { cents: true })}</div>
+                  <div className={`pill${r.success ? " ok" : ""}`}>{r.kind}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

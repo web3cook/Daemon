@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ERC20}  from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20}     from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20}    from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC8004ValidationRegistry} from "../../src/interfaces/IERC8004ValidationRegistry.sol";
 import {IService} from "../../src/interfaces/IService.sol";
 
@@ -57,6 +58,21 @@ contract MockService is IService {
         revertMsg    = _msg;
     }
 
+    function userRegistered(
+        address /* subscriber */,
+        address /* spendToken */,
+        uint256 /* amount */,
+        uint256 /* interval */,
+        bytes calldata /* params */
+    ) external view returns (bool) {
+        if (shouldRevert) revert(revertMsg);
+        return true;
+    }
+
+    Call[] public registrations;
+
+    function registrationCount() external view returns (uint256) { return registrations.length; }
+
     function execute(
         address subscriber,
         address spendToken,
@@ -64,7 +80,12 @@ contract MockService is IService {
         bytes calldata params
     ) external returns (bool) {
         if (shouldRevert) revert(revertMsg);
-        calls.push(Call(subscriber, spendToken, amount, params));
+        calls.push(Call({
+            subscriber: subscriber,
+            spendToken:   spendToken,
+            amount:       amount,
+            params:       params
+        }));
         return true;
     }
 
@@ -78,6 +99,8 @@ contract MockService is IService {
 // Configured before each test with the relevant addresses and amounts.
 
 contract MockAggregator {
+    using SafeERC20 for IERC20;
+
     address public spendToken;
     address public outputToken;
     uint256 public outputAmount;
@@ -96,7 +119,9 @@ contract MockAggregator {
     fallback() external {
         require(!shouldFail, "MockAgg: forced fail");
         uint256 approved = IERC20(spendToken).allowance(msg.sender, address(this));
-        if (approved > 0) IERC20(spendToken).transferFrom(msg.sender, address(this), approved);
+        if (approved > 0) {
+            IERC20(spendToken).safeTransferFrom(msg.sender, address(this), approved);
+        }
         MockERC20(outputToken).mint(msg.sender, outputAmount);
     }
 }

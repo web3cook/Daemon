@@ -1,264 +1,214 @@
-# Product Requirements Document: Agentic DCA — Autonomous On-Chain Investment via x402 + ERC-8004
+# Product Requirements Document: Daemon, an Agent Subscription Marketplace
 
-**Version:** 2.0  
-**Date:** 2026-06-08  
-**Status:** Draft  
-**Target Network:** Arbitrum One
+**Version:** 3.0
+**Date:** 2026-06-14
+**Status:** Draft
+**Target Network:** Arbitrum
 
 ---
 
 ## 1. Overview
 
-Agentic DCA is a non-custodial, on-chain systematic investment platform where **autonomous AI agents** execute recurring asset purchases on behalf of users. Unlike a traditional cron bot, each execution agent has a verified on-chain identity (ERC-8004), autonomously pays for the external data it needs to operate (x402), and is authorized by the user's smart contract only after its identity and trust score are verified.
+Daemon is a non-custodial marketplace where anyone can list an autonomous AI agent and anyone can pay it for work. Creators publish agents that do useful recurring or on-demand tasks (monitoring, alerting, dollar-cost averaging, research, reporting), and subscribers pay them in USDC on Arbitrum.
 
-The system combines three primitives:
+There are two ways to pay, each matched to a different payment primitive:
 
-| Primitive | Role |
-|---|---|
-| **Subscriptions.sol + SIPService.sol** | On-chain permission layer — stores user intent, enforces timing, pulls funds via Permit2 |
-| **ERC-8004** | Agent trust layer — registers the execution agent's identity on-chain; smart contract validates agent before executing |
-| **x402** | Agent payment layer — the agent autonomously pays for price data and routing APIs in USDC micropayments during each execution cycle |
+| Mode | Primitive | Shape |
+|---|---|---|
+| **Subscription** | Permit2 standing allowance (`Subscriptions.sol` + `Service.sol`) | One signature authorizes recurring USDC pulls, a fixed amount per interval, bounded by a duration, revocable in one transaction |
+| **One-time** | x402 / EIP-3009 `transferWithAuthorization` | A single gasless USDC payment straight to the agent, no commitment, no custom contract |
 
-For the POC, the concrete action is **periodic USDC → WETH / WBTC purchases on Arbitrum One** via Uniswap v3 or Camelot. The architecture is generic: any agentic action (yield rebalancing, recurring NFT mints, on-chain subscription payments) can be scheduled by implementing a new `IService`.
+Money moves directly between subscriber and agent. Daemon never custodies funds, charges no platform fee, and listing an agent is free. Agents are services the creator hosts; Daemon orchestrates payment and scheduling but never runs a creator's code.
+
+The original product was a single DCA executor agent. That use case still exists as one example listing (`SIPService.sol`), but the platform is now generic: any agent that exposes an HTTP endpoint can be listed.
 
 ---
 
 ## 2. Problem Statement
 
-Traditional DCA bots are centralized executors: they hold keys, lack verifiable identity, and depend on opaque off-chain logic. Users must fully trust the operator. On-chain DCA has improved custody but the execution layer remains a dumb cron job with no intelligence or accountability.
+Software agents are increasingly doing real work on a schedule, and as they do, they need a way to earn for the work they perform and to pay for the work they consume. The payment rails we have were built for people and companies, not for autonomous software:
 
-Meanwhile, AI agents are increasingly being used to manage on-chain portfolios, but they lack:
-1. **Verifiable identity** — there is no on-chain way for a smart contract to confirm it is dealing with a specific, reputable agent rather than an impersonator.
-2. **Autonomous resource acquisition** — agents need live price data and routing quotes to operate safely, but acquiring these requires pre-negotiated API keys and centralized coordination.
-3. **User-controllable authorization** — users cannot grant fine-grained, revocable authority to an AI agent in the same way they do with human counterparties.
+1. **Agents cannot use traditional billing.** A recurring-billing stack assumes a human or a registered business with a bank account, a card on file, and an identity check. An agent is a wallet and some code. It cannot open a Stripe account.
+2. **On-chain payments were not recurring or bounded.** Stablecoins let an agent be paid and pay, but until now making those payments recurring required either handing over a key or trusting an operator to hold a balance.
+3. **No native way to compose paid services.** An agent that needs a sub-service (data, summarization, routing) had no simple, trustless way to subscribe to another agent and pay for it autonomously.
 
-x402 and ERC-8004 together close these gaps and enable a new class of trustless agentic commerce.
+Daemon closes these gaps with two on-chain payment primitives and a marketplace around them, so both humans and agents can pay agents directly, with the rules enforced by code.
 
 ---
 
 ## 3. Goals
 
-- Allow any Arbitrum user to set up a recurring crypto investment plan in under 5 minutes, executed by a verified autonomous agent.
-- The execution agent must have a verifiable ERC-8004 identity; the smart contract must validate this identity before accepting any `execute()` call.
-- The agent autonomously pays for the external data it needs (price feeds, swap routing) via x402 micropayments — no pre-negotiated API keys, no centralized coordination.
-- Remain fully non-custodial: the agent never holds user funds; Permit2 transfers happen only within approved parameters.
-- Generalise the architecture so any recurring agentic action can be plugged in as a new `IService`.
+- Let a creator list an agent for subscriptions and/or one-time use in minutes, for free, with no platform fee.
+- Let a subscriber, human or agent, subscribe to an agent (recurring) or run it once (pay-per-use) in a few clicks.
+- Keep everything non-custodial: funds move directly between subscriber and agent, and a subscription pulls only the approved amount within the approved duration.
+- Make subscriptions revocable by the subscriber in a single transaction.
+- Keep the agent runtime generic: any HTTP-hosted agent can be listed; Daemon orchestrates without running the creator's code.
+- Give subscribers a portfolio view of what they pay and the status of each run, and give creators a view of subscribers and earnings.
 
 ## 3.1 Non-Goals (v1 / POC)
 
 - Custodial fund management of any kind.
-- Multi-chain execution in a single subscription.
-- Fiat on-ramp or off-ramp.
-- The agent making discretionary investment decisions — timing is fixed by interval, amounts are fixed by subscription. Agent intelligence is scoped to data acquisition and execution safety checks.
-- Governance token.
-- Mobile app (web-only).
+- A platform fee or scheduled payouts. Listing is free and agents self-withdraw.
+- Multi-tier pricing per agent (one agent has one subscription price and interval in v1).
+- Multi-chain execution. Arbitrum only.
+- On-chain escrow or trustless delivery guarantees for one-time runs (trust plus reputation for the POC).
+- On-chain agent identity and reputation (ERC-8004). Deferred and tracked off-chain for now.
+- Fiat on-ramp or off-ramp, mobile app, governance token.
 
 ---
 
 ## 4. User Personas
 
-### 4.1 Passive Investor ("Alex")
-- Holds USDC on Arbitrum.
-- Wants to DCA into ETH every week without touching a browser.
-- Needs assurance that the agent executing their plan is trustworthy and has an on-chain track record.
-- Will not manage API keys or run infrastructure.
+### 4.1 Agent Creator
+- Builds an agent that does recurring or on-demand work and hosts it as an HTTP service.
+- Wants to earn in USDC without a Stripe account, a bank, or a payout schedule.
+- Registers the agent, sets a price and interval (and/or a one-time price), and declares the inputs the agent needs from each subscriber.
+- Wants to see who subscribed and withdraw earnings whenever they want.
 
-### 4.2 DeFi Power User ("Sam")
-- Wants to verify the agent's ERC-8004 identity and reputation score before subscribing.
-- Wants to understand exactly what x402 payments the agent makes during each cycle and what they cost.
-- May want to authorize multiple agents (different strategies) and compare their execution quality.
-- Wants to inspect all contract source code.
+### 4.2 Subscriber (human)
+- Wants to put an agent to work, either on a recurring schedule or for a single run.
+- Wants fine-grained, revocable control: a fixed amount per cycle, a duration they choose, cancel anytime.
+- Wants to see active subscriptions, what they pay, and the status of each run in one place.
 
-### 4.3 Agent Developer ("Dev")
-- Wants to build a new agentic service (e.g., recurring yield optimization) that plugs into the Subscriptions protocol.
-- Needs a clear `IService` interface and an ERC-8004 registration flow.
-- Wants to use x402 to monetize data services they expose to other agents.
+### 4.3 Subscriber (agent)
+- An agent that needs a capability another agent provides (data, summarization, routing).
+- Subscribes to or pays the other agent autonomously from its own wallet, with no human in the loop.
+- Is both a provider that earns and a consumer that pays, composing capabilities the way software composes libraries.
 
 ---
 
 ## 5. Architecture Overview
 
+Agents run as services the creator hosts. The frontend is where participants act, the backend orchestrates without holding funds, and the Arbitrum contracts handle subscription authorization and settlement.
+
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                          Frontend                            │
-│   (Simulation · Dashboard · Subscribe · Agent Explorer)      │
-└───────────────────────────┬──────────────────────────────────┘
-                            │ REST / WebSocket
-┌───────────────────────────▼──────────────────────────────────┐
-│                          Backend                             │
-│  ┌─────────────────┐  ┌──────────────┐  ┌─────────────────┐ │
-│  │  Price History  │  │  Simulation  │  │  Agent Executor │ │
-│  │    Service      │  │     API      │  │  (ERC-8004 ID)  │ │
-│  └─────────────────┘  └──────────────┘  └────────┬────────┘ │
-└──────────────────────────────────────────────────┼──────────-┘
-          x402 micropayments (USDC)                │
-┌─────────────────────────────┐                    │ execute()
-│   External Data Services    │                    │
-│  ┌──────────────────────┐   │   ┌────────────────▼──────────────────┐
-│  │  Price Feed API      │   │   │         Smart Contracts            │
-│  │  (x402-gated)        │   │   │  ┌────────────────────────────┐   │
-│  └──────────────────────┘   │   │  │     Subscriptions.sol       │   │
-│  ┌──────────────────────┐   │   │  │  (validates ERC-8004 agent) │   │
-│  │  DEX Routing API     │   │   │  └─────────────┬──────────────┘   │
-│  │  (x402-gated)        │   │   │                │                  │
-│  └──────────────────────┘   │   │  ┌─────────────▼──────────────┐   │
-└─────────────────────────────┘   │  │      SIPService.sol         │   │
-                                  │  │  (Uniswap v3 / Camelot)     │   │
-                                  │  └─────────────────────────────┘   │
-                                  │                                     │
-                                  │  ┌──────────────────────────────┐  │
-                                  │  │   ERC-8004 Registries         │  │
-                                  │  │  (Identity · Reputation ·     │  │
-                                  │  │   Validation)                 │  │
-                                  │  └──────────────────────────────┘  │
-                                  └────────────────────────────────────┘
-                                              │ Swap
-                                         ┌────▼──────────┐
-                                         │  Uniswap v3   │
-                                         │  / Camelot    │
-                                         │  (Arbitrum)   │
-                                         └───────────────┘
+                    Agent Creator          Subscriber (human or agent)
+                          │                          │
+                          ▼                          ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │                    Frontend (Next.js)                     │
+        │   Marketplace · Agent detail · Portfolio · Creator console │
+        └───────────────┬───────────────────────────┬──────────────┘
+                        │ REST (BFF)                 │ wallet txns
+                        ▼                            ▼
+   ┌─────────────────────────────────┐   ┌──────────────────────────┐
+   │   Backend (Node, no custody)    │   │        Arbitrum          │
+   │  API / BFF                      │   │  Subscriptions.sol       │
+   │  Agent registry (DB)            │◀─▶│  ServiceFactory.sol      │
+   │  Scheduler / executor           │   │  Service.sol (per agent) │
+   │  Indexer                        │   │  USDC · Permit2          │
+   │  Auth (wallet nonce/sign)       │   │  (no fee, no one-time    │
+   └──────────┬──────────────────────┘   │   contract)              │
+              │ signed work request      └──────────────────────────┘
+              ▼
+   ┌──────────────────────────────────────────┐
+   │       Creator-hosted agent endpoints       │
+   │   the actual work, off-chain (HTTP)        │
+   └──────────────────────────────────────────┘
+
+One-time path bypasses our backend: the subscriber's browser is the x402
+client and calls the creator's endpoint directly; the creator settles the
+EIP-3009 payment and funds go straight to the agent.
 ```
 
 ---
 
 ## 6. Smart Contracts
 
-All contracts deploy to **Arbitrum One**. Hardhat + Foundry for development and testing.
+All contracts deploy to **Arbitrum**. Foundry for development and testing. The subscription path is on-chain; the one-time path uses no custom contract.
 
 ### 6.1 Subscriptions.sol
 
-Core protocol contract — unchanged in structure from v1 but with one critical addition: **the executor check now validates the calling agent's ERC-8004 identity**.
+The permission and settlement layer for subscriptions. It stores each subscription, enforces timing and expiry, and pulls USDC via Permit2 each cycle. Execution is gated by a simple executor allowlist (the platform's scheduler). There is no on-chain trust scoring in this version.
 
 #### Subscription Data Model
 
 ```
 Subscription {
   id:                    bytes32   // keccak256(subscriber, service, spendToken, nonce)
-  subscriber:            address   // user wallet
-  service:               address   // IService contract address
-  spendToken:            address   // USDC (Arbitrum: 0xaf88d065e77c8cC2239327C5EDb3A432268e5831)
-  amountPerCycle:        uint256   // USDC amount per execution (6 decimals)
-  interval:              uint256   // seconds between executions
-  lastExecutionTime:     uint256   // unix timestamp of last execution
-  subscriptionStartTime: uint256   // unix timestamp of creation
-  permitExpiry:          uint256   // Permit2 expiry = cancellation marker
+  subscriber:            address   // user or agent wallet
+  service:               address   // the agent's Service contract
+  spendToken:            address   // USDC on Arbitrum
+  amountPerCycle:        uint96    // USDC amount per execution
+  interval:              uint32    // seconds between executions
+  lastExecutionTime:     uint48    // unix timestamp of last execution
+  subscriptionStartTime: uint48    // unix timestamp of creation
+  permitExpiry:          uint48    // Permit2 expiry, doubles as the cancellation marker
 }
 ```
 
-Same invariants as v1:
-- No `active` flag; active while `block.timestamp <= permitExpiry`.
+Invariants:
+- No `active` flag. Active while `block.timestamp <= permitExpiry`.
 - Cancellation sets `permitExpiry = block.timestamp`.
-- Execution cap implicit: `(permitExpiry - subscriptionStartTime) / interval`.
+- Permit2 constant: `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
-#### Agent-Gated Executor Check
+#### Executor Check
 
-`execute()` now requires the `msg.sender` to pass two checks:
-1. It is in the `authorizedExecutors` mapping (set by owner via `setExecutor`).
-2. Its ERC-8004 agent ID (stored in `agentIds[msg.sender]`) has a minimum trust score from the configured Validation Registry.
+`execute()` requires `msg.sender` to be in the `executors` allowlist (set by the owner via `setExecutor`). That is the only gate. ERC-8004 trust scoring has been removed from this version and is deferred.
 
 ```solidity
-modifier onlyTrustedAgent() {
-    require(authorizedExecutors[msg.sender], "NotExecutor");
-    uint256 agentId = agentIds[msg.sender];
-    require(agentId != 0, "AgentNotRegistered");
-    uint256 score = erc8004ValidationRegistry.getScore(agentId);
-    require(score >= minAgentTrustScore, "InsufficientAgentTrust");
+modifier onlyExecutor() {
+    if (!executors[msg.sender]) revert NotExecutor();
     _;
 }
 ```
 
-`minAgentTrustScore` is owner-configurable (default: 50/100).
+#### Subscriber Params
+
+The subscriber's input values ride in the `subscribe()` call as `bytes params` and are **emitted in an event** for the indexer. The contract does not store them in contract storage or interpret them. The indexer reads the event into the database, and the backend passes the values to the agent endpoint each cycle.
 
 #### Key Functions
 
 | Function | Caller | Description |
 |---|---|---|
-| `subscribe(service, spendToken, amount, interval, permitSingle, signature)` | User | Creates subscription; registers Permit2 allowance |
-| `cancel(subscriptionId)` | User | Sets `permitExpiry = now`; subscription expires immediately |
-| `execute(subscriptionId)` | Agent (ERC-8004 registered executor) | Validates timing, expiry, agent trust, then calls `service.execute()` |
-| `setExecutor(address executor, uint256 agentId, bool enabled)` | Owner | Maps an EOA to its ERC-8004 agent ID and enables/disables it |
-| `setMinTrustScore(uint256)` | Owner | Updates the minimum ERC-8004 validation score required |
-| `registerService(address)` | Owner | Whitelists an IService contract |
+| `subscribe(service, spendToken, amount, interval, permitSingle, signature, params)` | Subscriber | Creates a subscription, registers the Permit2 allowance, emits params |
+| `cancel(subscriptionId)` | Subscriber | Sets `permitExpiry = now`; the subscription stops immediately |
+| `execute(subscriptionId, params)` | Executor (platform scheduler) | Validates timing and expiry, pulls one cycle via Permit2, calls `service.execute()` |
+| `setExecutor(address, bool enabled)` | Owner | Enables or disables an executor EOA |
+| `setFactory(address)` | Owner | Authorizes the ServiceFactory to register services it deploys |
+| `registerService(address)` | Owner or factory | Whitelists a Service contract |
 | `pause()` / `unpause()` | Owner | Emergency stop |
 
-#### Safety Invariants (same as v1)
+#### Safety Invariants
 
 - `block.timestamp >= lastExecutionTime + interval` before execution (`TooEarly` revert).
 - `block.timestamp <= permitExpiry` (`SubscriptionNotActive` revert).
 - Subscriber holds at least `amountPerCycle` (`InsufficientSubscriptionAmount` revert).
-- Contract never holds funds. Permit2 `transferFrom` happens atomically at execution.
-- Permit2 constant: `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
+- The contract never holds funds. The Permit2 `transferFrom` happens atomically at execution.
 
 ---
 
-### 6.2 SIPService.sol
+### 6.2 Service.sol and ServiceFactory.sol
 
-Implements `IService` for asset purchases on Arbitrum. Integrates with Uniswap v3 and/or Camelot DEX.
+Each subscription-capable agent gets its own `Service` contract, deployed by `ServiceFactory` at registration. The Service holds the agent's subscription revenue and lets the creator withdraw it. There is no platform fee and no treasury.
 
-#### Responsibilities
-- Accept spend token from Subscriptions, execute swap via Uniswap v3 Universal Router or Camelot router.
-- Send purchased tokens directly to subscriber — never hold them.
-- Enforce `minOutputAmount` (slippage protection computed by agent off-chain).
-- Maintain whitelist of supported output tokens.
-- Collect optional protocol fee (v1: 0).
+**ServiceFactory.createService(feeReceiver, spendToken, amount)** is permissionless. It deploys a `Service` owned by the caller (the agent or creator), registers it on `Subscriptions`, and tracks it (`servicesByAgent`, `allServices`, `isFactoryService`). The frontend reads the new address from the `ServiceCreated` event.
 
-#### Arbitrum Token Addresses (initial whitelist)
+**Service** responsibilities:
+- `userRegistered(subscriber, spendToken, amount, params)`: called from `Subscriptions.subscribe()`. Validates that the token and amount match the agent's configured terms, and emits the subscriber params for the indexer. It does not store params in storage.
+- `execute(subscriber, spendToken, amount, params)`: called each cycle after the Permit2 pull. The base Service records the payment as the agent's earning. A specialized Service can do more (see SIPService).
+- `withdraw(token)`: the creator sweeps the Service balance to `feeReceiver`.
+- `setFeeReceiver`, `setTerms`: creator configuration.
 
-| Token | Address |
-|---|---|
-| USDC (native) | `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` |
-| USDC.e (bridged) | `0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8` |
-| WETH | `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1` |
-| WBTC | `0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0F` |
-| ARB | `0x912CE59144191C1204E64559FE8253a0e49E6548` |
+A **one-time-only** agent needs no Service at all. It is just backend metadata, an endpoint, and a payout wallet.
 
-#### Key Functions
+### 6.3 SIPService.sol (example agent)
 
-| Function | Caller | Description |
-|---|---|---|
-| `execute(subscriber, spendToken, amount, params)` | Subscriptions | `params` encodes `(outputToken, minOutputAmount, swapPath)`. Executes swap and sends output to subscriber. |
-| `addToken(address)` | Owner | Adds output token to whitelist |
-| `removeToken(address)` | Owner | Removes token from whitelist |
-| `setFee(uint256 bps)` | Owner | Sets protocol fee. Capped at deploy-time constant. |
-| `setRouter(address)` | Owner | Updates DEX router address |
+`SIPService` is one example listing: a DCA agent built on `Service`. Instead of simply holding the payment, it swaps the spend token through an aggregator and sends the output token (WETH, WBTC) directly to the subscriber, keeping a configurable fee as its own earning. It demonstrates that an agent's `execute()` can perform real on-chain work while staying non-custodial to the subscriber. It is not the core of the platform; it is a reference for what a DeFi agent looks like.
 
----
-
-### 6.3 ERC-8004 Registries (deployed or referenced)
-
-The product either deploys its own minimal ERC-8004 registry on Arbitrum or references an existing deployment if one exists by launch time.
-
-Three registry contracts:
-
-**IdentityRegistry.sol** — ERC-721 based. Each agent mints a unique NFT representing its identity. The token URI points to an AgentCard JSON hosted at a `.well-known/` endpoint.
-
-**ReputationRegistry.sol** — Accepts execution feedback records. After each successful `execute()`, Subscriptions emits a feedback event that the agent can use to request a reputation update. Score is aggregated from verified feedback.
-
-**ValidationRegistry.sol** — Validator contracts (initially operated by the protocol) re-execute agent logic or attest via TEE/ZK proofs and post validation scores (0–100) on-chain. `Subscriptions.sol` reads these scores.
-
-#### Agent Card Schema (hosted at `.well-known/agent.json`)
-
-```json
-{
-  "agentId": "<uint256 from IdentityRegistry>",
-  "name": "SIP Executor Agent v1",
-  "description": "Executes DCA subscriptions on Arbitrum; pays for data via x402",
-  "serviceEndpoints": {
-    "executor": "<agent EOA address>"
-  },
-  "capabilities": ["dca_execution", "x402_payment", "permit2_transfer"],
-  "trustModels": ["reputation", "validation"],
-  "x402PaymentAddress": "<agent USDC wallet for x402 top-ups>"
-}
-```
-
----
+Arbitrum token addresses (example whitelist): USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`, WETH `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`, WBTC `0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0F`.
 
 ### 6.4 IService Interface
 
 ```solidity
 interface IService {
+    function userRegistered(
+        address subscriber,
+        address spendToken,
+        uint256 amount,
+        bytes calldata params
+    ) external returns (bool);
+
     function execute(
         address subscriber,
         address spendToken,
@@ -268,287 +218,204 @@ interface IService {
 }
 ```
 
-Any future agentic service implements this and registers with Subscriptions.
+Any agent that wants subscriptions implements this and is deployed through the factory.
 
 ---
 
-## 7. x402 Integration
+## 7. Payments
 
-x402 is the payment rail the agent uses to autonomously acquire the external data it needs during each execution cycle. The agent's operational USDC balance is funded by a small fraction of protocol fees (Phase 2) or a pre-funded operator wallet (POC).
+### 7.1 Subscription (Permit2)
 
-### 7.1 Services the Agent Pays for via x402
-
-| Service | x402 Payment | Data Returned |
-|---|---|---|
-| Price Feed API | ~$0.001 USDC per call | Current token price for slippage calc |
-| DEX Routing API | ~$0.001 USDC per call | Best swap route + encoded calldata |
-| Gas Estimator API | ~$0.0005 USDC per call | Arbitrum current gas price estimate |
-
-For POC, these services can be mock x402 servers running locally or using a public x402-compatible data provider if one is available on Arbitrum.
-
-### 7.2 x402 Payment Flow (per execution cycle)
+A subscription is a standing, revocable authorization rather than a stored payment method.
 
 ```
-1. Agent determines a subscription is due
-2. Agent sends GET /price/{token} to price feed API
-   → Receives HTTP 402 with payment requirements
-   → Agent pays X USDC from its wallet via x402 protocol
-   → Price data returned
-3. Agent sends GET /route?from=USDC&to=WETH&amount=N to routing API
-   → Same 402 → pay → route data returned
-4. Agent computes minOutputAmount = routeOutput * (1 - slippageTolerance)
-5. Agent submits execute(subscriptionId, minOutputAmount, swapData) to Subscriptions.sol
+1. Subscriber approves USDC to Permit2 once (one ERC-20 approval).
+2. Subscriber signs a Permit2 PermitSingle bounding the amount per cycle and a duration.
+3. Subscriber calls Subscriptions.subscribe(...); their params are emitted on-chain.
+4. Each cycle: the scheduler calls execute(); USDC is pulled into the agent's Service;
+   the backend sends a signed work request to the agent endpoint; the status is stored.
+5. Cancel anytime: cancel(id) sets permitExpiry = now and all future pulls revert.
 ```
 
-### 7.3 x402 on Arbitrum
+One signature authorizes recurring pulls, the subscriber keeps custody throughout, and a single transaction cancels everything going forward.
 
-x402's official facilitators currently focus on Base and Polygon. For Arbitrum:
-- The protocol implements a minimal **x402 facilitator** contract on Arbitrum that verifies payment proofs.
-- The agent uses the x402 TypeScript SDK with a custom Arbitrum provider configured for USDC on Arbitrum.
-- Payment settlement is USDC → service operator wallet, verified on-chain.
+### 7.2 One-time (x402 / EIP-3009), direct
+
+A one-time run is a single gasless USDC payment, settled directly between the subscriber and the agent, with no custom contract and no Daemon involvement in the payment path. This is the x402 `exact` scheme over EIP-3009 `transferWithAuthorization`.
+
+```
+1. The subscriber's browser (x402 client) calls the creator's endpoint.
+2. The endpoint returns HTTP 402 with payment requirements (amount, USDC, payTo = agent).
+3. The wallet signs an EIP-3009 transferWithAuthorization (from, to, value, validAfter,
+   validBefore, nonce) over the token's EIP-712 domain.
+4. The browser retries with the signed payload in the X-Payment header.
+5. The creator (acting as its own x402 facilitator) verifies and settles the transfer;
+   USDC goes straight from subscriber to agent.
+6. The endpoint does the work and returns a short status, which Daemon may record for display.
+```
+
+For the POC, one-time goes direct to keep Daemon out of the payment path. A platform-facilitated version can be added later. EIP-3009 requires the token to support `transferWithAuthorization`; canonical USDC does, and a test token that supports it is used on Sepolia.
+
+### 7.3 Why two primitives
+
+EIP-3009 authorizes exactly one transfer of a fixed amount; it cannot express a recurring pull with a single signature, so it is ideal for one-time and wrong for subscriptions. Permit2 grants a standing allowance that can be pulled repeatedly until expiry, which is exactly the recurring shape, and it cancels in one call. Each primitive is used where it fits.
 
 ---
 
-## 8. ERC-8004 Agent Trust Flow
+## 8. Money and Earnings
 
-```
-Deploy time:
-  1. Protocol deploys IdentityRegistry, ReputationRegistry, ValidationRegistry on Arbitrum
-  2. Agent operator calls IdentityRegistry.register() → receives agentId (NFT)
-  3. Agent operator calls Subscriptions.setExecutor(agentEOA, agentId, true)
-  4. Validator attests to agent's code and behavior → ValidationRegistry stores score
-
-Subscription creation:
-  5. User calls Subscriptions.subscribe(...) → no agent interaction needed
-
-Execution time:
-  6. Agent calls Subscriptions.execute(subscriptionId)
-  7. Subscriptions calls ValidationRegistry.getScore(agentId) → must be >= minTrustScore
-  8. If trusted: Subscriptions executes; emits Executed event
-  9. After execution: Subscriptions emits AgentFeedback event with execution result
-  10. Agent (or protocol) submits positive feedback to ReputationRegistry → score improves
-
-Cancellation / agent compromise:
-  11. Owner calls setExecutor(agentEOA, agentId, false) to revoke immediately
-  12. ValidatorRegistry score can be set to 0 to freeze all new executions
-```
+- **No platform fee, free listing, fully non-custodial.** Daemon holds nothing and takes no cut.
+- **Subscription revenue** accrues in the agent's own `Service` contract. The creator withdraws it whenever they want via `Service.withdraw()`.
+- **One-time revenue** lands directly in the agent's wallet at settlement.
+- **Earnings view** is computed from the on-chain Service balance and totals (indexed) plus indexed one-time receipts. There is no payout schedule and no platform-held balance.
 
 ---
 
-## 9. Backend
+## 9. Trust Between Platform and Agent Endpoint
 
-### 9.1 Agent Executor
+The subscription work-trigger and the one-time payment are secured differently:
 
-The core backend service. Runs as a Node.js process. Has an ERC-8004 registered identity.
+- **One-time** is self-securing. The payment and the work request are the same x402 exchange; the endpoint only does the work after it sees a valid, settled payment.
+- **Subscription** separates payment (on-chain pull) from the work request (backend to endpoint). The backend POSTs a **signed** work request `{subscriber, params, subscription_id, tx_hash, signature}` to the creator's endpoint. The endpoint verifies Daemon's signature (a key the creator registers at signup) and may independently check the on-chain reference, then does the work and returns a status.
 
-#### Responsibilities
-- Index `SubscriptionCreated`, `SubscriptionCancelled`, `Executed` events from Subscriptions contract on Arbitrum.
-- Maintain execution schedule in PostgreSQL.
-- Per execution cycle:
-  - Acquire price data via x402 (pay → receive).
-  - Acquire swap route via x402 (pay → receive).
-  - Compute `minOutputAmount` with configured slippage.
-  - Submit `execute()` to Subscriptions.sol signed by agent EOA.
-  - Record result and emit feedback to ReputationRegistry.
-- Retry with exponential backoff on transient failures.
-- Skip execution if Arbitrum gas price exceeds configured ceiling (default: 0.1 gwei).
+ERC-8004 on-chain identity and reputation would strengthen this later; for the POC, agent identity and reputation are tracked off-chain in the registry.
 
-#### x402 Client Module
+---
 
-```typescript
-// Wraps x402 TypeScript SDK for Arbitrum USDC payments
-class X402Client {
-  async fetchWithPayment(url: string): Promise<Response> {
-    // 1. Send request
-    // 2. If 402, extract payment requirements
-    // 3. Sign and submit USDC payment on Arbitrum
-    // 4. Retry request with payment proof header
-  }
+## 10. Backend
+
+### 10.1 Agent Registry
+
+The off-chain record for each agent: endpoint URL, price, interval, mode (`subscription` / `one-time` / `both`), input schema (the fields a subscriber must supply), owner wallet, and Service address. This is where agent identity lives until ERC-8004 is introduced. The card tagline and short description can be summarized from the creator's longer description.
+
+### 10.2 Scheduler / Executor
+
+A loop that finds due subscriptions, calls `execute()` on `Subscriptions` as a registered executor to pull the cycle's payment, then sends a signed work request to the creator's endpoint and records the returned status. Retries with backoff on transient failures.
+
+### 10.3 Indexer
+
+Reads chain events into PostgreSQL: `SubscriptionCreated` (including the emitted params), `Executed`, `ServiceCreated`, and Service withdrawals. Keeps the marketplace, portfolio, and earnings views in sync with chain state.
+
+### 10.4 API (BFF) and Auth
+
+Aggregates on-chain and database state for the frontend. Wallet-based auth (nonce, sign, verify). Representative endpoints: marketplace listing and detail, user subscriptions, create and cancel subscription, billing, invoices, creator agents, register and update agent, creator earnings.
+
+### 10.5 One-time
+
+One-time runs are creator-direct, so the backend is not in the payment path. It provides discovery (listing the agent, its endpoint, price) and may record the returned status for display in the subscriber's portfolio.
+
+### 10.6 Database Schema (representative)
+
+```
+agents {
+  agent_id, owner_address, service_address, name, category,
+  endpoint_url, mode, price_amount, interval_seconds,
+  param_schema (jsonb), status, created_at
 }
-```
 
-#### Agent EOA Security
-- Private key in AWS Secrets Manager / HashiCorp Vault.
-- Agent wallet holds only operational USDC (for x402 payments) and ETH (for gas).
-- Compromise of agent key cannot move user funds — Subscriptions.sol enforces all constraints.
-
-#### Database Schema
-
-```
 subscriptions {
-  id, subscriber_address, service_address, spend_token,
+  id (on-chain bytes32), subscriber_address, agent_id, service_address,
   amount_per_cycle, interval_seconds, last_execution_time,
-  subscription_start_time, permit_expiry, created_at
+  permit_expiry, params (jsonb), tx_hash, created_at
 }
 
-execution_log {
-  id, subscription_id, executed_at, tx_hash, status,
-  amount_spent, amount_received, output_token,
-  price_at_execution, swap_route, x402_payments_made,
-  x402_total_cost_usdc, error_message
-}
-
-agent_state {
-  agent_id, erc8004_identity_id, trust_score,
-  total_executions, total_x402_spent, wallet_balance_usdc
+runs {
+  id, subscription_id (nullable for one-time), agent_id, subscriber_address,
+  kind (subscription | one_time), status_message, link, tx_hash, ran_at
 }
 ```
 
 ---
 
-### 9.2 Price History Service
+## 11. Frontend
 
-Unchanged from v1. Ingests OHLCV from CoinGecko/CoinMarketCap, stores in PostgreSQL, serves the Simulation API. Not involved in live execution (live prices come from x402-gated feeds).
+Next.js (App Router), wagmi, viem, RainbowKit. Arbitrum.
 
----
+- **Marketplace.** Browse agents by category, search, and sort. Public, no wallet required.
+- **Agent detail.** Description, inputs, price, and mode. A single subscribe action (USDC approval, Permit2 signature, `subscribe()`) and, where offered, a run-once action that acts as the x402 client against the creator's endpoint directly.
+- **Subscriber portfolio.** Active subscriptions, what is paid, and the status of recent runs. Cancel in one transaction.
+- **Creator console.** Register an agent (single price, interval, mode, input schema), see subscribers, and view and withdraw earnings.
+- **Docs.** Public documentation with architecture and flow diagrams.
 
-### 9.3 Simulation API
-
-Unchanged from v1. Stateless replay of historical DCA. Used by frontend calculator.
-
----
-
-### 9.4 Frontend API (BFF)
-
-Adds agent-specific endpoints to v1:
-
-| Endpoint | Description |
-|---|---|
-| `GET /subscriptions?address=` | All subscriptions for a wallet |
-| `GET /subscriptions/{id}/history` | Execution history including x402 costs |
-| `GET /portfolio?address=` | Aggregate P&L |
-| `GET /tokens` | Whitelisted tokens with current price |
-| `GET /agent/status` | Current agent trust score, x402 balance, execution stats |
-| `GET /agent/identity` | Agent's ERC-8004 identity card |
+Registration deploys the Service on-chain through the factory (for subscription-capable agents), then records the agent in the backend with the new Service address.
 
 ---
 
-## 10. Frontend
-
-### 10.1 Pages
-
-#### Landing Page
-- Explains the agentic DCA concept: "An autonomous agent executes your plan — with a verified on-chain identity."
-- Shows agent trust score and execution history publicly.
-- Connect wallet CTA.
-
-#### Simulation Calculator
-- Same as v1 (no wallet required).
-- "Start this SIP" CTA pre-fills create form.
-
-#### Dashboard (wallet required)
-- Active subscriptions with next-execution countdown.
-- Per-execution history: amount bought, price, tx hash, x402 data costs.
-- Agent status panel: ERC-8004 identity, trust score, total executions.
-- Cancel SIP button.
-
-#### Create SIP
-1. Select output token (WETH, WBTC, ARB).
-2. Set USDC amount per cycle.
-3. Set interval (daily, weekly, monthly, custom).
-4. Optionally set end date.
-5. Approve USDC to Permit2 (wallet tx).
-6. Sign Permit2 `PermitSingle` + call `subscribe()` (wallet tx).
-7. Confirmation screen.
-
-#### Agent Explorer (new page)
-- Shows the agent's ERC-8004 AgentCard.
-- Reputation score history chart.
-- All-time execution stats: success rate, average slippage, x402 cost per execution.
-- Links to on-chain registry contracts and agent source code.
-
-### 10.2 Wallet Support
-- MetaMask, WalletConnect, Coinbase Wallet (Arbitrum network).
-
----
-
-## 11. Security Considerations
+## 12. Security Considerations
 
 ### Smart Contracts
-- Contracts audited before mainnet. Formal verification on Subscriptions.sol core invariants.
-- No upgradeability in v1 — immutable. Migrations are new deployments.
-- Reentrancy guards on all external calls.
-- ERC-8004 trust score check is a read-only view call; it cannot be manipulated in-flight.
-- Token whitelist prevents fee-on-transfer or rebase tokens from breaking accounting.
+- The contract never holds user funds; the Permit2 `transferFrom` happens atomically at execution.
+- A subscription pulls only the approved amount per cycle and only while the permit is unexpired; cancellation is immediate.
+- Reentrancy guards on external calls. Service whitelisting prevents arbitrary contracts from receiving pulled funds.
+- The executor allowlist limits who can trigger a pull. A compromised executor still cannot exceed the subscriber's approved amount or duration.
 
-### Agent / x402
-- Agent wallet holds minimal operational USDC only. Never holds user funds.
-- x402 payments are bounded per execution (configurable max cost ceiling).
-- If x402 data service returns bad data (wrong price), agent still enforces `minOutputAmount` on-chain — worst case: transaction reverts, no funds lost.
-- Agent EOA key in secrets manager, rotated quarterly.
+### Agents and one-time payments
+- One-time settlement is a single EIP-3009 transfer bounded by amount and a time window; a replayed nonce is rejected by the token.
+- The trust model for one-time delivery is reputation, not escrow. A misbehaving agent is rated down and delisted. Escrow is a future option.
+- Subscription work requests are signed by Daemon; the endpoint verifies the signature and may check the on-chain reference.
 
-### ERC-8004
-- Trust score is queried fresh at each `execute()` call — stale cached scores are not used.
-- Owner can revoke executor status instantly to freeze a compromised agent.
-- Validation registry scores can be zeroed by validators if misbehavior is detected.
+### Deferred trust layer
+- ERC-8004 identity and validation registries exist in the repo but are out of the live path. When reintroduced, identity attaches to the service agents and reputation feeds marketplace ranking and, optionally, a subscribe gate.
 
 ---
 
-## 12. POC Scope (What Gets Built First)
-
-The POC proves the full x402 + ERC-8004 + DCA loop end-to-end on Arbitrum.
+## 13. POC Scope (What Gets Built First)
 
 | Component | POC Implementation |
 |---|---|
-| `Subscriptions.sol` | Full implementation with ERC-8004 trust check |
-| `SIPService.sol` | Uniswap v3 swap on Arbitrum One |
-| ERC-8004 Registries | Minimal deploy: IdentityRegistry + ValidationRegistry only (Reputation optional) |
-| Agent Executor | Node.js service, registered on ERC-8004, performs USDC→WETH DCA |
-| x402 Integration | Mock x402 server providing price/route data; agent pays per call using x402 TypeScript SDK on Arbitrum |
-| Frontend | Dashboard + Create SIP + Agent Explorer (no simulation calculator for POC) |
-| Spend token | USDC on Arbitrum (`0xaf88d065e77c8cC2239327C5EDb3A432268e5831`) |
-| Output tokens | WETH, WBTC |
-| Interval | Minimum 1 hour for POC (no daily minimum enforced at contract level) |
+| `Subscriptions.sol` | Executor-gated, Permit2 pulls, params emitted; no trust scoring |
+| `Service.sol` / `ServiceFactory.sol` | Per-agent Service, self-withdraw, no fee; permissionless factory |
+| `SIPService.sol` | One example DCA agent (swap and forward output to subscriber) |
+| One-time (x402) | Creator-direct EIP-3009 settlement; no custom contract |
+| Backend | Agent registry, scheduler with signed work requests, indexer, BFF, wallet auth |
+| Frontend | Marketplace, agent detail, portfolio, creator console, docs |
+| Spend token | USDC on Arbitrum (Sepolia mock for testnet) |
+| ERC-8004 | Deferred; identity and reputation tracked off-chain |
 
 ---
 
-## 13. Success Metrics
+## 14. Success Metrics
 
 | Metric | POC Target | 6-Month Target |
 |---|---|---|
-| End-to-end executions on testnet | 10 | — |
-| Agent ERC-8004 trust score | ≥ 80/100 | ≥ 90/100 |
-| x402 payments successfully processed | 10 | — |
-| Active subscriptions (mainnet) | — | 200 |
-| Total volume executed | — | $100,000 |
-| Execution success rate | ≥ 95% | ≥ 99% |
+| Agents listed | 5 | 100 |
+| End-to-end subscription executions on testnet | 10 | n/a |
+| One-time x402 runs settled | 10 | n/a |
+| Active subscriptions (mainnet) | n/a | 200 |
+| Total volume settled | n/a | $100,000 |
+| Execution success rate | >= 95% | >= 99% |
 | User-reported fund loss | 0 | 0 |
 
 ---
 
-## 14. Phased Roadmap
+## 15. Phased Roadmap
 
-### Phase 1 — POC (Arbitrum testnet → mainnet)
-- Subscriptions.sol + SIPService.sol on Arbitrum.
-- ERC-8004 identity + validation for agent.
-- x402 mock data services (price + routing).
-- USDC → WETH/WBTC DCA.
-- Minimal frontend: Create + Dashboard + Agent Explorer.
+### Phase 1: POC (Arbitrum testnet to mainnet)
+- `Subscriptions` + `Service` + `ServiceFactory` on Arbitrum; `SIPService` as an example agent.
+- Permit2 subscriptions and creator-direct x402 one-time runs.
+- Backend: agent registry, scheduler with signed work requests, indexer, BFF.
+- Frontend: marketplace, agent detail, portfolio, creator console, docs.
 
-### Phase 2 — Production Agent
-- x402 connections to real production data APIs.
-- Full ERC-8004 Reputation registry with post-execution feedback loop.
-- Slippage tolerance configurable per subscription.
-- Fee mechanism (funded from small execution fee, offsets agent's x402 costs).
-- Email/push execution notifications (opt-in).
+### Phase 2: Trust and reliability
+- Reintroduce ERC-8004: on-chain agent identity and subscriber-driven reputation feeding marketplace ranking.
+- Platform-facilitated x402 option for one-time, so creators do not each run a facilitator.
+- Notifications (opt-in) for run status and subscription events.
 
-### Phase 3 — Open Agentic Protocol
-- Multiple agents can register and compete for subscriptions (user selects preferred agent by trust score).
-- New IService implementations: yield rebalancing, recurring NFT mints, on-chain subscription payments.
-- Agent SDK: developer toolkit for building new ERC-8004 + x402 enabled agentic services.
-- Agent marketplace: browse agents by capability, reputation, and cost.
+### Phase 3: Open agent economy
+- First-class agent-to-agent subscriptions: agents discovering and subscribing to other agents autonomously.
+- Optional on-chain escrow for one-time runs that need trustless delivery.
+- Agent SDK: a toolkit for exposing a compliant endpoint and listing in minutes.
+- Multi-tier pricing and usage-based billing.
 
 ---
 
-## 15. Open Questions
+## 16. Open Questions
 
 | # | Question | Owner | Priority |
 |---|---|---|---|
-| 1 | Is there an existing ERC-8004 registry deployment on Arbitrum, or do we deploy our own? | Engineering | High |
-| 2 | Which x402 facilitator supports Arbitrum USDC? Deploy our own or wait for ecosystem? | Engineering | High |
-| 3 | Uniswap v3 Universal Router or Camelot for swaps? (Camelot is Arbitrum-native, deeper ARB liquidity) | Engineering | High |
-| 4 | Initial token whitelist beyond WETH and WBTC? | Product | Medium |
-| 5 | What is the minimum trust score required (default 50/100)? | Product | Medium |
-| 6 | How does the agent's operational USDC wallet get topped up to cover x402 payments? | Engineering | Medium |
-| 7 | Who operates the Validation Registry validator in POC? (Protocol-owned initially) | Engineering | High |
-| 8 | What is the gas ceiling on Arbitrum before agent skips an execution? | Engineering | Low |
+| 1 | What is the registered set of subscription intervals (weekly, monthly, custom)? | Product | Medium |
+| 2 | Does the backend learn of new subscriptions from the indexer, a frontend POST, or both? | Engineering | Medium |
+| 3 | What is the exact signed work-request schema and signature scheme the endpoint verifies? | Engineering | High |
+| 4 | Should the test USDC on Sepolia support EIP-3009, or do we deploy one that does for the one-time demo? | Engineering | High |
+| 5 | How do we present and rate one-time agents without on-chain reputation yet? | Product | Medium |
+| 6 | When ERC-8004 returns, does trust gate listing, subscribing, or only ranking? | Product | Medium |

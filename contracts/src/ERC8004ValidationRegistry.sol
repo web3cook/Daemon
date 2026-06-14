@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable}      from "@openzeppelin/contracts/access/Ownable.sol";
@@ -16,8 +16,12 @@ contract ERC8004ValidationRegistry is IERC8004ValidationRegistry, Ownable2Step {
     mapping(uint256 => uint256) private _scores;
 
     modifier onlyValidator() {
-        if (!validators[msg.sender]) revert NotValidator();
+        _onlyValidator();
         _;
+    }
+
+    function _onlyValidator() internal view {
+        if (!validators[msg.sender]) revert NotValidator();
     }
 
     constructor(address initialValidator) Ownable(msg.sender) {

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity ^0.8.24;
 
 interface IService {
-    /// @notice Execute a single DCA cycle for a subscriber.
-    /// @param subscriber Recipient of the output tokens.
-    /// @param spendToken Input token transferred to this contract before this call.
-    /// @param amount     Amount of spendToken available for the swap.
-    /// @param params     Implementation-specific swap parameters (ABI-encoded).
-    /// @return           True on success; revert on any failure.
+
+    function userRegistered(
+        address        subscriber,
+        address        spendToken,
+        uint256        amount,
+        uint256        interval,
+        bytes calldata params
+    ) external returns (bool);
+
     function execute(
         address        subscriber,
         address        spendToken,
