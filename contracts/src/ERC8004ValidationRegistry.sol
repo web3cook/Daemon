@@ -16,8 +16,12 @@ contract ERC8004ValidationRegistry is IERC8004ValidationRegistry, Ownable2Step {
     mapping(uint256 => uint256) private _scores;
 
     modifier onlyValidator() {
-        if (!validators[msg.sender]) revert NotValidator();
+        _onlyValidator();
         _;
+    }
+
+    function _onlyValidator() internal view {
+        if (!validators[msg.sender]) revert NotValidator();
     }
 
     constructor(address initialValidator) Ownable(msg.sender) {

@@ -12,7 +12,6 @@ import {
 import {
   CONTRACT_CHAIN,
   PERMIT2_ADDRESS,
-  SUBSCRIPTION_DURATION_SECONDS,
   SUBSCRIPTIONS_ADDRESS,
   USDC_ADDRESS,
   permit2Abi,
@@ -44,7 +43,7 @@ export interface OnChainSubscription {
  * Sepolia:
  *   1. one-time USDC approval to Permit2 (skipped if allowance suffices)
  *   2. EIP-712 PermitSingle signature authorising Subscriptions to pull USDC
- *   3. Subscriptions.subscribe() — returns the id from SubscriptionCreated
+ *   3. Subscriptions.subscribe() returns the id from SubscriptionCreated
  */
 export function useSubscribeOnChain() {
   const { address, chainId } = useAccount();
@@ -59,10 +58,12 @@ export function useSubscribeOnChain() {
       serviceAddress: `0x${string}`,
       amountPerCycle: bigint,
       intervalSecs: number,
+      durationSecs: number,
+      paramsHex: `0x${string}` = "0x",
     ): Promise<OnChainSubscription> => {
       if (!address) throw new Error("wallet not connected");
       if (!SUBSCRIPTIONS_ADDRESS || !USDC_ADDRESS) {
-        throw new Error("contract addresses not configured — set NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS");
+        throw new Error("contract addresses not configured: set NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS");
       }
       if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
 
@@ -73,10 +74,11 @@ export function useSubscribeOnChain() {
         }
 
         const now = Math.floor(Date.now() / 1000);
-        // 5-min buffer matches the contracts' Subscribe script: a later permit
-        // must not cut an earlier subscription's window short.
-        const permitExpiry = now + SUBSCRIPTION_DURATION_SECONDS + 300;
-        const cycles = BigInt(Math.floor(SUBSCRIPTION_DURATION_SECONDS / intervalSecs) + 1);
+        // permitExpiry bounds the subscription to the duration the subscriber
+        // chose. 5-min buffer matches the contracts' Subscribe script so a
+        // later permit can't cut an earlier subscription's window short.
+        const permitExpiry = now + durationSecs + 300;
+        const cycles = BigInt(Math.floor(durationSecs / intervalSecs) + 1);
 
         // 1. One-time ERC20 approval so Permit2 can move the user's USDC.
         const allowance = await publicClient.readContract({
@@ -128,8 +130,9 @@ export function useSubscribeOnChain() {
           message: permitSingle,
         });
 
-        // 3. subscribe() — service params are empty for now (the Service
-        // contract stores whatever the agent requires; none defined yet).
+        // 3. subscribe(): paramsHex carries the subscriber's answers to the
+        // agent's required inputs. Service.userRegistered() stores them and
+        // emits UserRegistered(subscriber, params) on-chain.
         setPhase("subscribing");
         const hash = await writeContractAsync({
           address: SUBSCRIPTIONS_ADDRESS,
@@ -143,7 +146,7 @@ export function useSubscribeOnChain() {
             BigInt(intervalSecs),
             permitSingle,
             signature,
-            "0x",
+            paramsHex,
           ],
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });

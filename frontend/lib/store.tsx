@@ -13,13 +13,14 @@ import {
 import { useRouter } from "next/navigation";
 import { useAccount, useDisconnect } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
-import { parseUnits } from "viem";
+import { parseUnits, stringToHex } from "viem";
 import { shortenAddress } from "./wagmi";
 import { ApiError } from "./api/client";
 import { useCancelSubscription, useOnboard, useSubscribe } from "./api/hooks";
+import { invokeAgent, type InvokeAgentDetails } from "./api/endpoints";
 import { USDC_DECIMALS, billingIntervalSeconds } from "./contracts";
 import { SUBSCRIBE_PHASE_LABEL, useSubscribeOnChain } from "./useSubscribeOnChain";
-import type { BillingInterval, Money } from "./api/types";
+import type { AgentMode, BillingInterval, Money, ParamField } from "./api/types";
 
 export type Role = "sub" | "cre";
 
@@ -35,13 +36,16 @@ export interface Wallet {
 export interface PendingSub {
   agentId: string;
   agentName: string;
-  /** Agent's Service contract — target of the on-chain subscribe. */
-  serviceAddress: string;
-  planId: string;
-  planName: string;
+  mode: AgentMode;
+  /** Agent's Service contract, target of the on-chain subscribe (null for one-time only). */
+  serviceAddress: string | null;
   billingInterval: BillingInterval;
-  price: Money;
-  meter: string;
+  /** Subscription price per cycle; null unless subscription/both. */
+  subPrice: Money | null;
+  /** x402 price per run; null unless one_time/both. */
+  oneTimePrice: Money | null;
+  /** Inputs the agent requires from the subscriber. */
+  paramSchema: ParamField[];
 }
 
 interface AppState {
@@ -53,12 +57,18 @@ interface AppState {
   subscribePending: boolean;
   /** Progress label while the on-chain + backend subscribe flow runs. */
   subscribePhase: string | null;
+  /** Output of a one-time invocation, shown in the modal once it completes. */
+  oneTimeOutput: InvokeAgentDetails | null;
+  oneTimePending: boolean;
   openWalletModal: () => void;
   disconnectWallet: () => void;
   finishOnboard: (handle: string, role: Role) => void;
   requestSubscribe: (sub: PendingSub) => void;
   closeSubModal: () => void;
-  confirmSub: () => void;
+  /** Recurring subscription: on-chain subscribe (duration-bounded) + backend record. */
+  confirmSubscribe: (durationSeconds: number, paramValues: Record<string, string>) => void;
+  /** One-time execution via the agent's invoke endpoint. */
+  runOneTime: (paramValues: Record<string, string>) => void;
   cancelSub: (subscriptionId: string, agentName: string) => void;
   showToast: (msg: string) => void;
 }
@@ -90,6 +100,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [pendingSub, setPendingSub] = useState<PendingSub | null>(null);
+  const [oneTimeOutput, setOneTimeOutput] = useState<InvokeAgentDetails | null>(null);
+  const [oneTimePending, setOneTimePending] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const prevConnected = useRef(false);
 
@@ -146,7 +158,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
             setOnboardOpen(false);
             router.push(role === "sub" ? "/" : "/creator");
-            showToast(`welcome, @${clean} — wallet linked`);
+            showToast(`welcome, @${clean} · wallet linked`);
           },
           onError: (e) => showToast(errMessage(e, "couldn’t complete onboarding")),
         },
@@ -167,48 +179,83 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [wallet, openWalletModal, showToast],
   );
 
-  const closeSubModal = useCallback(() => setPendingSub(null), []);
+  const closeSubModal = useCallback(() => {
+    setPendingSub(null);
+    setOneTimeOutput(null);
+  }, []);
 
-  const confirmSub = useCallback(async () => {
-    if (!pendingSub || !address) return;
+  const confirmSubscribe = useCallback(
+    async (durationSeconds: number, paramValues: Record<string, string>) => {
+      if (!pendingSub || !address) return;
+      if (!pendingSub.subPrice || !pendingSub.serviceAddress) {
+        showToast("this agent is not configured for subscriptions");
+        return;
+      }
 
-    // 1. On-chain: approve USDC → sign Permit2 → Subscriptions.subscribe().
-    let subscriptionId: string;
-    let txHash: string;
-    try {
-      const onchain = await subscribeOnChain(
-        pendingSub.serviceAddress as `0x${string}`,
-        parseUnits(pendingSub.price.amount, USDC_DECIMALS),
-        billingIntervalSeconds(pendingSub.billingInterval),
-      );
-      subscriptionId = onchain.subscriptionId;
-      txHash = onchain.txHash;
-    } catch (e) {
-      showToast(errMessage(e, "subscription failed"));
-      return;
-    }
+      // Encode the subscriber's answers so they are emitted on-chain by
+      // Subscriptions.subscribe() for the indexer. Empty object → "0x".
+      const paramsHex =
+        Object.keys(paramValues).length > 0
+          ? stringToHex(JSON.stringify(paramValues))
+          : ("0x" as `0x${string}`);
 
-    // 2. Backend: record the subscription with its on-chain id.
-    subscribeMut.mutate(
-      {
-        address,
-        agentId: pendingSub.agentId,
-        planId: pendingSub.planId,
-        subscriptionId,
-        txHash,
-      },
-      {
-        onSuccess: () => {
-          const name = pendingSub.agentName;
-          const plan = pendingSub.planName;
-          setPendingSub(null);
-          router.push("/subscriptions");
-          showToast(`Subscribed to ${name} · ${plan}`);
+      // 1. On-chain: approve USDC → sign Permit2 → Subscriptions.subscribe().
+      let subscriptionId: string;
+      let txHash: string;
+      try {
+        const onchain = await subscribeOnChain(
+          pendingSub.serviceAddress as `0x${string}`,
+          parseUnits(pendingSub.subPrice.amount, USDC_DECIMALS),
+          billingIntervalSeconds(pendingSub.billingInterval),
+          durationSeconds,
+          paramsHex,
+        );
+        subscriptionId = onchain.subscriptionId;
+        txHash = onchain.txHash;
+      } catch (e) {
+        showToast(errMessage(e, "subscription failed"));
+        return;
+      }
+
+      // 2. Backend: record the subscription with its on-chain id.
+      // Subscriber params are read from the event by the indexer, not sent here.
+      subscribeMut.mutate(
+        {
+          address,
+          agentId: pendingSub.agentId,
+          subscriptionId,
+          txHash,
         },
-        onError: (e) => showToast(errMessage(e, "subscription failed")),
-      },
-    );
-  }, [pendingSub, address, subscribeOnChain, subscribeMut, router, showToast]);
+        {
+          onSuccess: () => {
+            const name = pendingSub.agentName;
+            setPendingSub(null);
+            router.push("/subscriptions");
+            showToast(`Subscribed to ${name}`);
+          },
+          onError: (e) => showToast(errMessage(e, "subscription failed")),
+        },
+      );
+    },
+    [pendingSub, address, subscribeOnChain, subscribeMut, router, showToast],
+  );
+
+  const runOneTime = useCallback(
+    async (paramValues: Record<string, string>) => {
+      if (!pendingSub) return;
+      setOneTimePending(true);
+      setOneTimeOutput(null);
+      try {
+        const result = await invokeAgent(pendingSub.agentId, paramValues);
+        setOneTimeOutput(result);
+      } catch (e) {
+        showToast(errMessage(e, "couldn’t run the agent"));
+      } finally {
+        setOneTimePending(false);
+      }
+    },
+    [pendingSub, showToast],
+  );
 
   const cancelSub = useCallback(
     (subscriptionId: string, agentName: string) => {
@@ -216,7 +263,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelMut.mutate(
         { subscriptionId, address },
         {
-          onSuccess: () => showToast(`Cancelled ${agentName} — active until period end`),
+          onSuccess: () => showToast(`Cancelled ${agentName} · active until period end`),
           onError: (e) => showToast(errMessage(e, "couldn’t cancel")),
         },
       );
@@ -240,12 +287,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pendingSub,
       subscribePending: subscribePhase !== null,
       subscribePhase,
+      oneTimeOutput,
+      oneTimePending,
       openWalletModal,
       disconnectWallet,
       finishOnboard,
       requestSubscribe,
       closeSubModal,
-      confirmSub,
+      confirmSubscribe,
+      runOneTime,
       cancelSub,
       showToast,
     }),
@@ -256,12 +306,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       pendingSub,
       subscribePhase,
+      oneTimeOutput,
+      oneTimePending,
       openWalletModal,
       disconnectWallet,
       finishOnboard,
       requestSubscribe,
       closeSubModal,
-      confirmSub,
+      confirmSubscribe,
+      runOneTime,
       cancelSub,
       showToast,
     ],

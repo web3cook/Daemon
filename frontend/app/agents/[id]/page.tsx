@@ -2,7 +2,8 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useAgent, useUserSubscriptions } from "@/lib/api/hooks";
-import { formatMeter, formatMoney, monogram } from "@/lib/api/format";
+import { formatMoney } from "@/lib/api/format";
+import Avatar from "@/components/Avatar";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
 
@@ -38,26 +39,41 @@ export default function AgentDetailPage() {
   }
 
   const agent = data.agent;
-  const currentPlanIds = new Set(
-    (subsData?.subscriptions ?? [])
-      .filter((s) => s.agent_id === agent.agent_id && s.status === "active")
-      .map((s) => s.plan_id),
+  const alreadySubscribed = (subsData?.subscriptions ?? []).some(
+    (s) => s.agent_id === agent.agent_id && s.status === "active",
   );
+
+  const canSubscribe =
+    agent.mode !== "one_time" && !!agent.sub_price && !!agent.service_address;
+  const canOneTime = agent.mode !== "subscription" && !!agent.one_time_price;
+  const period = agent.payment_frequency === "weekly" ? "wk" : "mo";
+
+  const openModal = () =>
+    requestSubscribe({
+      agentId: agent.agent_id,
+      agentName: agent.name,
+      mode: agent.mode,
+      serviceAddress: agent.service_address,
+      billingInterval: agent.payment_frequency ?? "monthly",
+      subPrice: agent.sub_price,
+      oneTimePrice: agent.one_time_price,
+      paramSchema: agent.param_schema ?? [],
+    });
 
   return (
     <div>
       {back}
 
       <div className="detail-head">
-        <div className="avatar lg">{monogram(agent.name)}</div>
+        <Avatar name={agent.name} logo={agent.logo} size="lg" />
         <div>
           <h1 className="detail-title">{agent.name}</h1>
           <div className="detail-meta">
-            ★ {agent.rating} · {agent.tagline} · {agent.subscriber_count} subscribers · by{" "}
-            {agent.publisher_name}
+            ★ {agent.rating} · trust {agent.trust_score} · {agent.subscriber_count} subscribers ·
+            by {agent.publisher_name}
           </div>
         </div>
-        <div className="pricing-badge">pricing: {agent.pricing_model}</div>
+        <div className="pricing-badge">{agent.mode.replace("_", " ")}</div>
       </div>
 
       <p className="long-desc">{agent.description}</p>
@@ -70,43 +86,42 @@ export default function AgentDetailPage() {
         ))}
       </div>
 
-      <div className="kicker plans-label">{"// PLANS — SET BY CREATOR"}</div>
+      <div className="kicker plans-label">{"// PRICING · SET BY CREATOR"}</div>
       <div className="plans-grid">
-        {agent.plans.map((p) => {
-          const current = currentPlanIds.has(p.plan_id);
-          const meter = formatMeter(p.usage_price, p.usage_unit);
-          return (
-            <div key={p.plan_id} className={`plan-card${current ? " current" : ""}`}>
-              <div className="plan-name">{p.name}</div>
-              <div className="plan-price-row">
-                <div className="plan-price">{formatMoney(p.base_price, { cents: false })}</div>
-                <div className="plan-price-unit">/mo</div>
-              </div>
-              {meter && <div className="plan-meter">{meter}</div>}
-              <div className="plan-detail">{p.description}</div>
-              <button
-                className={`plan-btn${current ? " current" : ""}`}
-                onClick={
-                  current
-                    ? undefined
-                    : () =>
-                        requestSubscribe({
-                          agentId: agent.agent_id,
-                          agentName: agent.name,
-                          serviceAddress: agent.service_address,
-                          planId: p.plan_id,
-                          planName: p.name,
-                          billingInterval: p.billing_interval,
-                          price: p.base_price,
-                          meter,
-                        })
-                }
-              >
-                {current ? "current plan" : "subscribe"}
-              </button>
+        {canSubscribe && agent.sub_price && (
+          <div className={`plan-card${alreadySubscribed ? " current" : ""}`}>
+            <div className="plan-name">subscription</div>
+            <div className="plan-price-row">
+              <div className="plan-price">{formatMoney(agent.sub_price, { cents: false })}</div>
+              <div className="plan-price-unit">/{period}</div>
             </div>
-          );
-        })}
+            <div className="plan-detail">
+              Recurring, billed every {agent.payment_frequency}. Cancel anytime.
+            </div>
+            <button
+              className={`plan-btn${alreadySubscribed ? " current" : ""}`}
+              onClick={alreadySubscribed ? undefined : openModal}
+            >
+              {alreadySubscribed ? "subscribed" : "subscribe"}
+            </button>
+          </div>
+        )}
+
+        {canOneTime && agent.one_time_price && (
+          <div className="plan-card">
+            <div className="plan-name">one-time</div>
+            <div className="plan-price-row">
+              <div className="plan-price">
+                {formatMoney(agent.one_time_price, { cents: false })}
+              </div>
+              <div className="plan-price-unit">/run</div>
+            </div>
+            <div className="plan-detail">Run once and get the output. No commitment.</div>
+            <button className="plan-btn" onClick={openModal}>
+              run once
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

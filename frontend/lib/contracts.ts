@@ -4,7 +4,7 @@ import type { BillingInterval } from "./api/types";
 /**
  * On-chain config for the Daemon contracts (Arbitrum Sepolia).
  * Addresses come from contracts/deployments/arbitrum-sepolia.json after
- * running DeployTestnet.s.sol — paste them into .env.local.
+ * running DeployTestnet.s.sol, then paste them into .env.local.
  */
 export const CONTRACT_CHAIN = arbitrumSepolia;
 
@@ -18,7 +18,7 @@ export const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as | `0x${strin
 
 export const USDC_DECIMALS = 6;
 
-/** Canonical Permit2 — same address on every EVM chain. */
+/** Canonical Permit2, same address on every EVM chain. */
 export const PERMIT2_ADDRESS =
   "0x000000000022D473030F116dDEE9F6B43aC78BA3" as `0x${string}`;
 
@@ -34,14 +34,12 @@ export function billingIntervalSeconds(interval: BillingInterval): number {
     case "weekly":
       return 7 * 24 * 60 * 60;
     case "monthly":
+    default:
       return 30 * 24 * 60 * 60;
-    case "one_time":
-      // One execution within the subscription window.
-      return SUBSCRIPTION_DURATION_SECONDS;
   }
 }
 
-/** Minimal ABI for ServiceFactory.createService + its event. */
+/** Minimal ABI for ServiceFactory: createService + registerAgent + events. */
 export const serviceFactoryAbi = [
   {
     type: "function",
@@ -51,8 +49,20 @@ export const serviceFactoryAbi = [
       { name: "feeReceiver", type: "address" },
       { name: "spendToken", type: "address" },
       { name: "amount", type: "uint256" },
+      { name: "interval", type: "uint32" },
+      { name: "agentCardURI", type: "string" },
     ],
-    outputs: [{ name: "", type: "address" }],
+    outputs: [
+      { name: "service", type: "address" },
+      { name: "agentId", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "registerAgent",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "agentCardURI", type: "string" }],
+    outputs: [{ name: "agentId", type: "uint256" }],
   },
   {
     type: "event",
@@ -63,6 +73,15 @@ export const serviceFactoryAbi = [
       { name: "spendToken", type: "address", indexed: true },
       { name: "amount", type: "uint256", indexed: false },
       { name: "feeReceiver", type: "address", indexed: false },
+      { name: "agentId", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "AgentRegistered",
+    inputs: [
+      { name: "agent", type: "address", indexed: true },
+      { name: "agentId", type: "uint256", indexed: true },
     ],
   },
 ] as const;
@@ -112,6 +131,7 @@ export const subscriptionsAbi = [
       { name: "amountPerCycle", type: "uint96", indexed: false },
       { name: "interval", type: "uint32", indexed: false },
       { name: "permitExpiry", type: "uint48", indexed: false },
+      { name: "params", type: "bytes", indexed: false },
     ],
   },
 ] as const;
@@ -135,7 +155,7 @@ export const permit2Abi = [
   },
 ] as const;
 
-/** EIP-712 types for Permit2's PermitSingle — must match Permit2 exactly. */
+/** EIP-712 types for Permit2's PermitSingle, must match Permit2 exactly. */
 export const permit2Types = {
   PermitDetails: [
     { name: "token", type: "address" },

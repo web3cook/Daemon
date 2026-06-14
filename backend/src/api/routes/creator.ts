@@ -3,52 +3,70 @@ import { isAddress } from 'viem'
 import { query } from '../../db/pool.js'
 import { ok, fail, money } from '../response.js'
 import { findOrCreateUser } from '../userdb.js'
-import { newAgentId, newPlanId } from '../ids.js'
-import { serializeAgentCard, serializePlan, type AgentRow, type PlanRow } from '../serializers.js'
+import { newAgentId, newWithdrawalId } from '../ids.js'
+import { serializeAgentCard, normalizeParamSchema, type AgentRow } from '../serializers.js'
+import { generateAgentBlurb } from '../../utils/summarize.js'
+import { getUsdcBalance } from '../chain.js'
+import { logger } from '../../logger.js'
 
 export const creatorRouter = Router()
 
 const VALID_CATEGORIES = new Set(['finance', 'productivity', 'career', 'engineering', 'research', 'other'])
-const VALID_PRICING_MODELS = new Set(['flat', 'usage', 'hybrid'])
-const VALID_BILLING_INTERVALS = new Set(['one_time', 'weekly', 'monthly'])
-
-const PLATFORM_FEE = 0.10
-
-interface PlanInput {
-  name?: string
-  billing_interval?: string
-  base_price?: { amount?: string | number; currency?: string }
-  usage_price?: { amount?: string | number; currency?: string } | null
-  usage_unit?: string | null
-  description?: string
-}
+const VALID_MODES = new Set(['subscription', 'one_time', 'both'])
+const VALID_PAYMENT_FREQUENCIES = new Set(['weekly', 'monthly'])
 
 function validateAgentPayload(body: {
   name?: string
   category?: string
+  description?: string
   short_description?: string
   services?: string[]
-  pricing_model?: string
-  plans?: PlanInput[]
-}, requirePlans: boolean): Record<string, string> | null {
+  mode?: string
+  sub_price_amount?: string | number
+  interval_seconds?: number
+  one_time_price_amount?: string | number
+  endpoint_url?: string
+  payment_frequency?: string
+}, requireFull: boolean): Record<string, string> | null {
   const errors: Record<string, string> = {}
 
   if (!body.name) errors['name'] = 'required'
   if (!body.category || !VALID_CATEGORIES.has(body.category)) errors['category'] = 'must be a valid agent_category'
-  if (!body.short_description) errors['short_description'] = 'required'
-  if (!Array.isArray(body.services) || body.services.length === 0) errors['services'] = 'must be a non-empty array'
-  if (!body.pricing_model || !VALID_PRICING_MODELS.has(body.pricing_model)) errors['pricing_model'] = 'must be flat, usage, or hybrid'
+  
+  if (requireFull && !body.description && !body.short_description) {
+    errors['description'] = 'required'
+  }
 
-  if (requirePlans || body.plans !== undefined) {
-    if (!Array.isArray(body.plans) || body.plans.length === 0) {
-      errors['plans'] = 'must be a non-empty array'
-    } else {
-      body.plans.forEach((plan, i) => {
-        if (!plan.name) errors[`plans[${i}].name`] = 'required'
-        if (!plan.billing_interval || !VALID_BILLING_INTERVALS.has(plan.billing_interval)) errors[`plans[${i}].billing_interval`] = 'must be a valid billing_interval'
-        const amount = Number(plan.base_price?.amount)
-        if (!plan.base_price || !(amount > 0)) errors[`plans[${i}].base_price.amount`] = 'must be > 0'
-      })
+  if (!body.mode || !VALID_MODES.has(body.mode)) {
+    errors['mode'] = 'must be subscription, one_time, or both'
+  } else {
+    if (body.mode === 'subscription' || body.mode === 'both') {
+      if (!body.sub_price_amount || !(Number(body.sub_price_amount) > 0)) {
+        errors['sub_price_amount'] = 'must be > 0'
+      }
+      if (!body.interval_seconds || !(Number(body.interval_seconds) > 0)) {
+        errors['interval_seconds'] = 'must be > 0'
+      }
+      if (body.payment_frequency && !VALID_PAYMENT_FREQUENCIES.has(body.payment_frequency)) {
+        errors['payment_frequency'] = 'must be weekly or monthly'
+      }
+    }
+    if (body.mode === 'one_time' || body.mode === 'both') {
+      if (!body.one_time_price_amount || !(Number(body.one_time_price_amount) > 0)) {
+        errors['one_time_price_amount'] = 'must be > 0'
+      }
+    }
+  }
+
+  if (!Array.isArray(body.services) || body.services.length === 0) {
+    errors['services'] = 'must be a non-empty array'
+  }
+
+  if (body.endpoint_url) {
+    try {
+      new URL(body.endpoint_url)
+    } catch {
+      errors['endpoint_url'] = 'must be a valid URL'
     }
   }
 
@@ -69,15 +87,9 @@ async function loadAgentDetail(agentId: string): Promise<object | null> {
   const agent = agentRes.rows[0]
   if (!agent) return null
 
-  const plansRes = await query<PlanRow>('SELECT * FROM plans WHERE agent_id = $1 ORDER BY sort_order ASC', [agentId])
-  const plans = plansRes.rows.map(serializePlan)
-  const fromPlan = plansRes.rows[0]
-
   const card = serializeAgentCard(agent) as Record<string, unknown>
   card['subscriber_count'] = agent.base_subscriber_count + (agent.live_subs ?? 0)
-  card['from_price'] = fromPlan ? money(fromPlan.base_price_amount, fromPlan.base_price_currency) : null
   card['description'] = agent.description ?? agent.short_description
-  card['plans'] = plans
   return card
 }
 
@@ -99,10 +111,9 @@ creatorRouter.post('/agents/list', async (req, res) => {
        FROM subscriptions WHERE status = 'active' GROUP BY agent_id
      ) sub ON sub.agent_id = a.agent_id
      LEFT JOIN (
-       SELECT s.agent_id, SUM(p.base_price_amount) AS total
+       SELECT s.agent_id, SUM(s.amount_per_cycle) AS total
        FROM subscriptions s
-       JOIN plans p ON p.plan_id = s.plan_id
-       WHERE s.status = 'active' AND p.billing_interval = 'monthly'
+       WHERE s.status = 'active'
        GROUP BY s.agent_id
      ) mrr ON mrr.agent_id = a.agent_id
      WHERE a.publisher_user_id = $1
@@ -119,7 +130,7 @@ creatorRouter.post('/agents/list', async (req, res) => {
     tagline: row.tagline,
     status: row.status,
     subscriber_count: row.base_subscriber_count + (row.live_subs ?? 0),
-    monthly_recurring_revenue: money(Number(row.mrr ?? 0) * (1 - PLATFORM_FEE)),
+    monthly_recurring_revenue: money(row.mrr || '0', 'USDC'),
     created_at: row.created_at.toISOString(),
   }))
 
@@ -132,10 +143,20 @@ creatorRouter.post('/agents/register', async (req, res) => {
     user_address?: string
     name?: string
     category?: string
+    description?: string
     short_description?: string
+    logo_url?: string
     services?: string[]
-    pricing_model?: string
-    plans?: PlanInput[]
+    mode?: string
+    sub_price_amount?: string | number
+    interval_seconds?: number
+    payment_frequency?: string
+    one_time_price_amount?: string | number
+    param_schema?: unknown
+    service_address?: string
+    onchain_agent_id?: string | number
+    agent_card_uri?: string
+    endpoint_url?: string
   }
 
   if (!body.user_address || !isAddress(body.user_address, { strict: false })) {
@@ -153,31 +174,42 @@ creatorRouter.post('/agents/register', async (req, res) => {
   const agentId = newAgentId()
   const slug = `${body.name!.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${agentId.slice(-6).toLowerCase()}`
 
+  const longDescription = (body.description ?? body.short_description ?? '').trim()
+  const blurb = await generateAgentBlurb(body.name!, longDescription)
+  const logo = body.logo_url?.trim() || null
+  const paramSchema = normalizeParamSchema(body.param_schema)
+
   await query(
-    `INSERT INTO agents (agent_id, slug, name, icon, logo, category, tagline, short_description, description,
-                          services, rating, rating_count, base_subscriber_count, publisher_name, publisher_user_id,
-                          pricing_model, status, onchain, usage_label)
-     VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$6,$7,0,0,0,$8,$9,$10,'live',false,NULL)`,
+    `INSERT INTO agents (
+      agent_id, slug, publisher_user_id, publisher_name, name, icon, logo, category, tagline, short_description, description,
+      services, mode, sub_price_amount, sub_price_currency, interval_seconds, payment_frequency, one_time_price_amount,
+      param_schema, service_address, onchain_agent_id, agent_card_uri, endpoint_url, trust_score, status, onchain
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'USDC',$15,$16,$17,$18,$19,$20,$21,$22,0,'live',true)`,
     [
-      agentId, slug, body.name, body.category, body.services![0] ?? '', body.short_description,
-      body.services, user.handle ?? body.user_address, user.user_id, body.pricing_model,
+      agentId,
+      slug,
+      user.user_id,
+      user.handle ?? body.user_address,
+      body.name,
+      logo,
+      logo,
+      body.category,
+      blurb.tagline,
+      blurb.short_description,
+      longDescription || blurb.short_description,
+      body.services,
+      body.mode,
+      body.sub_price_amount ? String(body.sub_price_amount) : null,
+      body.interval_seconds || null,
+      body.payment_frequency || null,
+      body.one_time_price_amount ? String(body.one_time_price_amount) : null,
+      JSON.stringify(paramSchema),
+      body.service_address || null,
+      body.onchain_agent_id ? String(body.onchain_agent_id) : null,
+      body.agent_card_uri || null,
+      body.endpoint_url || null
     ],
   )
-
-  let sortOrder = 0
-  for (const plan of body.plans!) {
-    await query(
-      `INSERT INTO plans (plan_id, agent_id, name, billing_interval, base_price_amount, base_price_currency,
-                           usage_price_amount, usage_unit, description, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [
-        newPlanId(), agentId, plan.name, plan.billing_interval,
-        plan.base_price!.amount, plan.base_price!.currency ?? 'USDC',
-        plan.usage_price?.amount ?? null, plan.usage_unit ?? null, plan.description ?? null, sortOrder,
-      ],
-    )
-    sortOrder++
-  }
 
   const detail = await loadAgentDetail(agentId)
   ok(res, 201, 'Agent registered and live in the marketplace', { agent: detail })
@@ -192,8 +224,10 @@ creatorRouter.post('/agents/update', async (req, res) => {
     category?: string
     short_description?: string
     services?: string[]
-    pricing_model?: string
-    plans?: PlanInput[]
+    mode?: string
+    sub_price_amount?: string | number
+    interval_seconds?: number
+    one_time_price_amount?: string | number
     status?: string
   }
 
@@ -240,30 +274,15 @@ creatorRouter.post('/agents/update', async (req, res) => {
   if (body.category !== undefined) addSet('category', body.category)
   if (body.short_description !== undefined) addSet('short_description', body.short_description)
   if (body.services !== undefined) addSet('services', body.services)
-  if (body.pricing_model !== undefined) addSet('pricing_model', body.pricing_model)
+  if (body.mode !== undefined) addSet('mode', body.mode)
+  if (body.sub_price_amount !== undefined) addSet('sub_price_amount', body.sub_price_amount ? String(body.sub_price_amount) : null)
+  if (body.interval_seconds !== undefined) addSet('interval_seconds', body.interval_seconds || null)
+  if (body.one_time_price_amount !== undefined) addSet('one_time_price_amount', body.one_time_price_amount ? String(body.one_time_price_amount) : null)
   if (body.status !== undefined) addSet('status', body.status)
 
   if (sets.length > 0) {
     params.push(body.agent_id)
     await query(`UPDATE agents SET ${sets.join(', ')} WHERE agent_id = $${params.length}`, params)
-  }
-
-  if (body.plans !== undefined) {
-    await query('DELETE FROM plans WHERE agent_id = $1', [body.agent_id])
-    let sortOrder = 0
-    for (const plan of body.plans) {
-      await query(
-        `INSERT INTO plans (plan_id, agent_id, name, billing_interval, base_price_amount, base_price_currency,
-                             usage_price_amount, usage_unit, description, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [
-          newPlanId(), body.agent_id, plan.name, plan.billing_interval,
-          plan.base_price!.amount, plan.base_price!.currency ?? 'USDC',
-          plan.usage_price?.amount ?? null, plan.usage_unit ?? null, plan.description ?? null, sortOrder,
-        ],
-      )
-      sortOrder++
-    }
   }
 
   const detail = await loadAgentDetail(body.agent_id)
@@ -280,18 +299,17 @@ creatorRouter.post('/earnings', async (req, res) => {
 
   const user = await findOrCreateUser(user_address)
 
-  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null }>(
-    `SELECT a.agent_id, a.name, a.base_subscriber_count, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr
+  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null; service_address: string | null }>(
+    `SELECT a.agent_id, a.name, a.base_subscriber_count, a.service_address, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr
      FROM agents a
      LEFT JOIN (
        SELECT agent_id, COUNT(*)::int AS live_subs
        FROM subscriptions WHERE status = 'active' GROUP BY agent_id
      ) sub ON sub.agent_id = a.agent_id
      LEFT JOIN (
-       SELECT s.agent_id, SUM(p.base_price_amount) AS total
+       SELECT s.agent_id, SUM(s.amount_per_cycle) AS total
        FROM subscriptions s
-       JOIN plans p ON p.plan_id = s.plan_id
-       WHERE s.status = 'active' AND p.billing_interval = 'monthly'
+       WHERE s.status = 'active'
        GROUP BY s.agent_id
      ) mrr ON mrr.agent_id = a.agent_id
      WHERE a.publisher_user_id = $1`,
@@ -299,82 +317,96 @@ creatorRouter.post('/earnings', async (req, res) => {
   )
 
   const agentIds = agentsRes.rows.map(r => r.agent_id)
+  const serviceAddresses = agentsRes.rows.map(r => r.service_address).filter(Boolean) as string[]
+
   const grossMrr = agentsRes.rows.reduce((sum, r) => sum + Number(r.mrr ?? 0), 0)
-  const netMrr = grossMrr * (1 - PLATFORM_FEE)
   const activeSubscribers = agentsRes.rows.reduce((sum, r) => sum + r.base_subscriber_count + (r.live_subs ?? 0), 0)
 
   let lifetimeRevenue = 0
   if (agentIds.length > 0) {
     const lifetimeRes = await query<{ total: string | null }>(
-      `SELECT SUM(i.amount) AS total
-       FROM invoices i
-       JOIN subscriptions s ON s.id = i.subscription_id
-       WHERE s.agent_id = ANY($1) AND i.status = 'paid'`,
+      `SELECT SUM(amount) AS total
+       FROM runs
+       WHERE agent_id = ANY($1) AND success = true`,
       [agentIds],
     )
-    lifetimeRevenue = Number(lifetimeRes.rows[0]?.total ?? 0) * (1 - PLATFORM_FEE)
+    lifetimeRevenue = Number(lifetimeRes.rows[0]?.total ?? 0)
   }
 
-  // Trailing 8 months, oldest first — zero-filled where no invoice data exists yet.
-  const revenueByMonth: { month: string; net: object }[] = []
+  // Trailing 8 months, oldest first
+  const revenueByMonth: { month: string; amount: object }[] = []
   const now = new Date()
   for (let i = 7; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    let net = 0
+    let amountVal = 0
     if (agentIds.length > 0) {
       const monthRes = await query<{ total: string | null }>(
-        `SELECT SUM(i.amount) AS total
-         FROM invoices i
-         JOIN subscriptions s ON s.id = i.subscription_id
-         WHERE s.agent_id = ANY($1) AND i.status = 'paid'
-           AND date_trunc('month', i.paid_at) = $2`,
+        `SELECT SUM(amount) AS total
+         FROM runs
+         WHERE agent_id = ANY($1) AND success = true
+           AND date_trunc('month', ran_at) = $2`,
         [agentIds, d],
       )
-      net = Number(monthRes.rows[0]?.total ?? 0) * (1 - PLATFORM_FEE)
+      amountVal = Number(monthRes.rows[0]?.total ?? 0)
     }
-    revenueByMonth.push({ month: monthKey, net: money(net) })
+    revenueByMonth.push({ month: monthKey, amount: money(amountVal, 'USDC') })
   }
 
-  let payouts: object[] = []
+  // Fetch withdrawals
+  let withdrawals: object[] = []
+  let totalWithdrawn = 0
   if (agentIds.length > 0) {
-    const payoutsRes = await query<{ payout_id: string; amount: string; currency: string; status: string; tx_hash: string | null; payout_at: Date }>(
-      `SELECT payout_id, amount, currency, status, tx_hash, payout_at
-       FROM payouts WHERE agent_id = ANY($1) ORDER BY payout_at DESC LIMIT 12`,
+    const wRes = await query<{ withdrawal_id: string; amount: string; currency: string; tx_hash: string | null; withdrawn_at: Date }>(
+      `SELECT withdrawal_id, amount, currency, tx_hash, withdrawn_at
+       FROM withdrawals WHERE agent_id = ANY($1) ORDER BY withdrawn_at DESC LIMIT 12`,
       [agentIds],
     )
-    payouts = payoutsRes.rows.map(p => ({
-      payout_id: p.payout_id,
-      amount: money(p.amount, p.currency),
-      status: p.status,
-      tx_hash: p.tx_hash,
-      payout_at: p.payout_at.toISOString(),
+    withdrawals = wRes.rows.map(w => ({
+      payout_id: w.withdrawal_id,
+      amount: money(w.amount, w.currency),
+      status: 'paid',
+      tx_hash: w.tx_hash,
+      payout_at: w.withdrawn_at.toISOString(),
     }))
+
+    const sumW = await query<{ total: string | null }>(
+      'SELECT SUM(amount) AS total FROM withdrawals WHERE agent_id = ANY($1)',
+      [agentIds]
+    )
+    totalWithdrawn = Number(sumW.rows[0]?.total ?? 0)
+  }
+
+  // Live withdrawable balances read from contracts in parallel
+  let withdrawableBalance = 0
+  for (const sAddr of serviceAddresses) {
+    try {
+      const bal = await getUsdcBalance(sAddr as `0x${string}`)
+      withdrawableBalance += Number(bal)
+    } catch (err) {
+      logger.warn({ err, service_address: sAddr }, 'failed to read live Service USDC balance')
+    }
   }
 
   const earningsByAgent = agentsRes.rows.map(r => ({
     agent_id: r.agent_id,
     agent_name: r.name,
     subscriber_count: r.base_subscriber_count + (r.live_subs ?? 0),
-    monthly_recurring_revenue: money(Number(r.mrr ?? 0) * (1 - PLATFORM_FEE)),
+    monthly_recurring_revenue: money(r.mrr || '0', 'USDC'),
   }))
-
-  const nextPayoutDate = new Date(now.getFullYear(), now.getMonth() + 1, 1)
 
   ok(res, 200, 'Data fetched successfully', {
     stats: {
-      net_monthly_recurring_revenue: money(netMrr),
+      net_monthly_recurring_revenue: money(grossMrr, 'USDC'),
       mrr_change_percent: 0,
       active_subscribers: activeSubscribers,
       subscriber_change: 0,
-      next_payout: {
-        amount: money(netMrr),
-        payout_at: nextPayoutDate.toISOString(),
-      },
-      lifetime_revenue: money(lifetimeRevenue),
+      withdrawable_balance: money(withdrawableBalance, 'USDC'),
+      total_withdrawn: money(totalWithdrawn, 'USDC'),
+      lifetime_revenue: money(lifetimeRevenue, 'USDC'),
     },
     revenue_by_month: revenueByMonth,
-    payouts,
+    payouts: withdrawals, // mapped for backward compatibility in frontend views
     earnings_by_agent: earningsByAgent,
   })
 })

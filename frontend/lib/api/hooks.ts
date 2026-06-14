@@ -6,13 +6,14 @@ import {
   cancelSubscription,
   createSubscription,
   getAgent,
-  getBilling,
   getCreatorEarnings,
   listAgents,
   listCreatorAgents,
-  listInvoices,
+  listSubscribers,
+  listUserRuns,
   listUserSubscriptions,
   onboardUser,
+  recordRun,
   registerAgent,
   updateAgent,
 } from "./endpoints";
@@ -28,9 +29,10 @@ export const queryKeys = {
   agent: (agentId: string) => ["agent", agentId] as const,
   subscriptions: (address?: string, status?: string) =>
     ["subscriptions", address, status] as const,
-  billing: (address?: string) => ["billing", address] as const,
-  invoices: (address?: string, page?: number) => ["invoices", address, page] as const,
+  runs: (address?: string, page?: number) => ["runs", address, page] as const,
   creatorAgents: (address?: string) => ["creator-agents", address] as const,
+  subscribers: (address?: string, agentId?: string) =>
+    ["subscribers", address, agentId] as const,
   earnings: (address?: string) => ["earnings", address] as const,
 };
 
@@ -51,7 +53,7 @@ export function useAgent(agentId: string) {
   });
 }
 
-// ── subscriptions & billing (wallet-scoped) ───────
+// ── subscriptions & spendings (wallet-scoped) ─────
 
 export function useUserSubscriptions(address?: string, status?: SubscriptionStatus) {
   return useQuery({
@@ -61,18 +63,10 @@ export function useUserSubscriptions(address?: string, status?: SubscriptionStat
   });
 }
 
-export function useBilling(address?: string) {
+export function useUserRuns(address?: string, page = 1, limit = 20) {
   return useQuery({
-    queryKey: queryKeys.billing(address),
-    queryFn: () => getBilling(address!),
-    enabled: !!address,
-  });
-}
-
-export function useInvoices(address?: string, page = 1, limit = 20) {
-  return useQuery({
-    queryKey: queryKeys.invoices(address, page),
-    queryFn: () => listInvoices(address!, page, limit),
+    queryKey: queryKeys.runs(address, page),
+    queryFn: () => listUserRuns(address!, page, limit),
     enabled: !!address,
   });
 }
@@ -84,6 +78,14 @@ export function useCreatorAgents(address?: string) {
     queryKey: queryKeys.creatorAgents(address),
     queryFn: () => listCreatorAgents(address!),
     enabled: !!address,
+  });
+}
+
+export function useSubscribers(address?: string, agentId?: string) {
+  return useQuery({
+    queryKey: queryKeys.subscribers(address, agentId),
+    queryFn: () => listSubscribers(address!, agentId!),
+    enabled: !!address && !!agentId,
   });
 }
 
@@ -103,14 +105,12 @@ export function useSubscribe() {
     mutationFn: (vars: {
       address: string;
       agentId: string;
-      planId: string;
       subscriptionId: string;
       txHash: string;
-    }) =>
-      createSubscription(vars.address, vars.agentId, vars.planId, vars.subscriptionId, vars.txHash),
+    }) => createSubscription(vars.address, vars.agentId, vars.subscriptionId, vars.txHash),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["subscriptions", vars.address] });
-      qc.invalidateQueries({ queryKey: queryKeys.billing(vars.address) });
+      qc.invalidateQueries({ queryKey: queryKeys.runs(vars.address) });
       qc.invalidateQueries({ queryKey: queryKeys.agent(vars.agentId) });
     },
   });
@@ -123,7 +123,16 @@ export function useCancelSubscription() {
       cancelSubscription(vars.subscriptionId, vars.address),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["subscriptions", vars.address] });
-      qc.invalidateQueries({ queryKey: queryKeys.billing(vars.address) });
+    },
+  });
+}
+
+export function useRecordRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: recordRun,
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.runs(vars.userAddress) });
     },
   });
 }

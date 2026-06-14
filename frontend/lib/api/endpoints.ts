@@ -3,15 +3,16 @@ import type {
   AgentDetailDetails,
   AgentListDetails,
   AgentMutationDetails,
-  BillingDetails,
   CancelSubscriptionDetails,
   CreateSubscriptionDetails,
   CreatorAgentListDetails,
   EarningsDetails,
-  InvoiceListDetails,
   NonceDetails,
+  RecordRunDetails,
   RegisterAgentInput,
+  RunListDetails,
   SortOption,
+  SubscriberListDetails,
   SubscriptionListDetails,
   SubscriptionStatus,
   UpdateAgentInput,
@@ -45,6 +46,7 @@ export function onboardUser(userAddress: string, handle: string, role: UserRole)
 
 export interface AgentQuery {
   category?: string;
+  mode?: string;
   search?: string;
   sort?: SortOption;
   page?: number;
@@ -59,7 +61,36 @@ export function getAgent(agentId: string) {
   return apiGet<AgentDetailDetails>(`/agents/${agentId}`);
 }
 
-// ── subscriptions & billing (§5) ──────────────────
+// ── one-time invocation (§7) ──────────────────────
+// POC: one-time runs are invoked through the backend. The production model is a
+// direct x402 call to the creator endpoint (see API_SPEC §7) plus recordRun().
+
+export interface InvokeAgentDetails {
+  invocation_id: string;
+  status: string;
+  agent?: { agent_id: string; name: string };
+  inputs?: Record<string, unknown>;
+  output: {
+    summary?: string;
+    result?: string;
+    generated_at?: string;
+  };
+  receipt?: {
+    amount?: { amount: string; currency: string };
+    tx_hash: string;
+    settled_at: string;
+  };
+}
+
+export function invokeAgent(agentId: string, paramValues: Record<string, string>) {
+  return apiPost<InvokeAgentDetails>(
+    `/agents/${agentId}/invoke`,
+    { param_values: paramValues },
+    { "X-Payment": "poc-stub" },
+  );
+}
+
+// ── subscriptions & spendings (§5) ────────────────
 
 export function listUserSubscriptions(userAddress: string, status?: SubscriptionStatus) {
   return apiPost<SubscriptionListDetails>("/user/subscriptions", {
@@ -71,15 +102,14 @@ export function listUserSubscriptions(userAddress: string, status?: Subscription
 export function createSubscription(
   userAddress: string,
   agentId: string,
-  planId: string,
   subscriptionId: string,
   txHash: string,
 ) {
   return apiPost<CreateSubscriptionDetails>("/subscriptions", {
     user_address: userAddress,
     agent_id: agentId,
-    plan_id: planId,
     // From the on-chain Subscriptions.subscribe() call that precedes this.
+    // Subscriber params are read from the event by the indexer, not sent here.
     subscription_id: subscriptionId,
     tx_hash: txHash,
   });
@@ -91,15 +121,32 @@ export function cancelSubscription(subscriptionId: string, userAddress: string) 
   });
 }
 
-export function getBilling(userAddress: string) {
-  return apiPost<BillingDetails>("/user/billing", { user_address: userAddress });
-}
-
-export function listInvoices(userAddress: string, page = 1, limit = 20) {
-  return apiPost<InvoiceListDetails>("/user/invoices", {
+export function listUserRuns(userAddress: string, page = 1, limit = 20) {
+  return apiPost<RunListDetails>("/user/runs", {
     user_address: userAddress,
     page,
     limit,
+  });
+}
+
+/** Record a completed one-time (x402) run for the portfolio + creator earnings. */
+export function recordRun(input: {
+  userAddress: string;
+  agentId: string;
+  amount: { amount: string; currency: string };
+  statusMessage: string;
+  link?: string;
+  success: boolean;
+  txHash?: string;
+}) {
+  return apiPost<RecordRunDetails>("/runs", {
+    user_address: input.userAddress,
+    agent_id: input.agentId,
+    amount: input.amount,
+    status_message: input.statusMessage,
+    link: input.link,
+    success: input.success,
+    tx_hash: input.txHash,
   });
 }
 
@@ -117,6 +164,15 @@ export function registerAgent(input: RegisterAgentInput) {
 
 export function updateAgent(input: UpdateAgentInput) {
   return apiPost<AgentMutationDetails>("/creator/agents/update", input);
+}
+
+export function listSubscribers(userAddress: string, agentId: string, page = 1, limit = 20) {
+  return apiPost<SubscriberListDetails>("/creator/agents/subscribers", {
+    user_address: userAddress,
+    agent_id: agentId,
+    page,
+    limit,
+  });
 }
 
 export function getCreatorEarnings(userAddress: string) {

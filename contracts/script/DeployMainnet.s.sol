@@ -6,6 +6,8 @@ import {Script, console} from "forge-std/Script.sol";
 import {Subscriptions}             from "../src/Subscriptions.sol";
 import {SIPService}                from "../src/SIPService.sol";
 import {ServiceFactory}            from "../src/ServiceFactory.sol";
+import {ERC8004IdentityRegistry}   from "../src/ERC8004IdentityRegistry.sol";
+import {ERC8004ValidationRegistry} from "../src/ERC8004ValidationRegistry.sol";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DeployMainnet — Arbitrum One
@@ -17,9 +19,8 @@ import {ServiceFactory}            from "../src/ServiceFactory.sol";
 //   EXECUTOR_ADDRESS             hot wallet that the agent backend uses to sign txs
 //   TREASURY_ADDRESS             multisig or EOA that receives protocol fees
 //   AGGREGATOR_ADDRESS           DEX router (e.g. Uniswap V3 SwapRouter02 on Arbitrum)
-//
-// ERC-8004 registries are intentionally not deployed — agent identity and
-// trust scores will be added later.
+//   AGENT_CARD_URI               AgentCard JSON URL for the SIPService identity
+//   SIP_INTERVAL_SECS            optional; default 604800 (7 days)
 //
 // Token addresses (Arbitrum One — set in .env or override below):
 //   USDC_ADDRESS                 0xaf88d065e77c8cC2239327C5EDb3A432268e5831
@@ -54,6 +55,9 @@ contract DeployMainnet is Script {
         address wbtc = vm.envAddress("WBTC_ADDRESS");
         address arb  = vm.envAddress("ARB_ADDRESS");
 
+        string memory agentCardURI = vm.envString("AGENT_CARD_URI");
+        uint32 sipInterval = uint32(vm.envOr("SIP_INTERVAL_SECS", uint256(7 days)));
+
         console.log("=== DeployMainnet: Arbitrum One ===");
         console.log("Deployer:   ", deployer);
         console.log("Executor:   ", executor);
@@ -69,23 +73,38 @@ contract DeployMainnet is Script {
         );
         console.log("Subscriptions:", address(subs));
 
-        // ── 2. SIPService ─────────────────────────────────────────────────────
+        // ── 2. ERC-8004 registries ──────────────────────────────────────────
+        ERC8004IdentityRegistry identityRegistry = new ERC8004IdentityRegistry();
+        ERC8004ValidationRegistry validationRegistry = new ERC8004ValidationRegistry(deployer);
+        console.log("IdentityRegistry:",   address(identityRegistry));
+        console.log("ValidationRegistry:", address(validationRegistry));
+
+        // ── 3. ServiceFactory ─────────────────────────────────────────────────
+        ServiceFactory serviceFactory = new ServiceFactory(
+            address(subs),
+            address(identityRegistry)
+        );
+        console.log("ServiceFactory:", address(serviceFactory));
+
+        identityRegistry.setRegistrar(address(serviceFactory), true);
+        subs.setFactory(address(serviceFactory));
+
+        // ── 4. SIPService (example DCA agent, direct deploy) ────────────────
+        uint256 sipAgentId = identityRegistry.register(agentCardURI);
         SIPService sipService = new SIPService(
             address(subs),
-            treasury,          // feeReceiver (protocol fee recipient)
-            usdc,              // spendToken subscribers pay with
+            treasury,
+            usdc,
             MIN_AMOUNT_PER_CYCLE,
+            sipInterval,
+            sipAgentId,
             MAX_FEE_BPS,
             aggregator
         );
         console.log("SIPService:", address(sipService));
+        console.log("SIP agentId:", sipAgentId);
 
-        // ── 3. ServiceFactory ─────────────────────────────────────────────────
-        ServiceFactory serviceFactory = new ServiceFactory(address(subs));
-        console.log("ServiceFactory:", address(serviceFactory));
-
-        // ── 4. Wire up ────────────────────────────────────────────────────────
-        subs.setFactory(address(serviceFactory));
+        // ── 5. Wire up ────────────────────────────────────────────────────────
         subs.registerService(address(sipService));
 
         sipService.addToken(weth);
@@ -99,20 +118,22 @@ contract DeployMainnet is Script {
 
         vm.stopBroadcast();
 
-        // ── 5. Save addresses ─────────────────────────────────────────────────
+        // ── 6. Save addresses ─────────────────────────────────────────────────
         string memory json = "mainnet";
-        vm.serializeAddress(json, "permit2",            PERMIT2);
-        vm.serializeAddress(json, "usdc",               usdc);
-        vm.serializeAddress(json, "weth",               weth);
-        vm.serializeAddress(json, "wbtc",               wbtc);
-        vm.serializeAddress(json, "arb",                arb);
-        vm.serializeAddress(json, "aggregator",         aggregator);
-        vm.serializeAddress(json, "executor",           executor);
-        vm.serializeAddress(json, "treasury",           treasury);
-        vm.serializeAddress(json, "subscriptions",      address(subs));
-        vm.serializeAddress(json, "sipService",         address(sipService));
+        vm.serializeAddress(json, "permit2",              PERMIT2);
+        vm.serializeAddress(json, "usdc",                 usdc);
+        vm.serializeAddress(json, "weth",                 weth);
+        vm.serializeAddress(json, "wbtc",                 wbtc);
+        vm.serializeAddress(json, "arb",                  arb);
+        vm.serializeAddress(json, "aggregator",           aggregator);
+        vm.serializeAddress(json, "executor",             executor);
+        vm.serializeAddress(json, "treasury",             treasury);
+        vm.serializeAddress(json, "identityRegistry",     address(identityRegistry));
+        vm.serializeAddress(json, "validationRegistry",     address(validationRegistry));
+        vm.serializeAddress(json, "subscriptions",        address(subs));
+        vm.serializeAddress(json, "sipService",           address(sipService));
         string memory out =
-        vm.serializeAddress(json, "serviceFactory",     address(serviceFactory));
+        vm.serializeAddress(json, "serviceFactory",       address(serviceFactory));
 
         vm.writeJson(out, "./deployments/arbitrum-mainnet.json");
         console.log("Addresses saved to ./deployments/arbitrum-mainnet.json");

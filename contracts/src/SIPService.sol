@@ -46,9 +46,11 @@ contract SIPService is Service, Pausable {
         address _feeReceiver,
         address _spendToken,
         uint256 _minAmountPerCycle,
+        uint32  _interval,
+        uint256 _agentId,
         uint256 _maxFee,
         address _aggregator
-    ) Service(msg.sender, _subscriptions, _feeReceiver, _spendToken, _minAmountPerCycle) {
+    ) Service(msg.sender, _subscriptions, _feeReceiver, _spendToken, _minAmountPerCycle, _interval, _agentId) {
         if (_aggregator == address(0)) revert ZeroAddress();
         MAX_FEE    = _maxFee;
         aggregator = _aggregator;
@@ -88,20 +90,18 @@ contract SIPService is Service, Pausable {
     function unpause() external onlyOwner { _unpause(); }
 
     /// @notice Subscribe-time validation. Token must match the configured
-    ///         spendToken; the per-cycle amount only has to meet the configured
-    ///         minimum, since DCA subscribers pick their own size.
+    ///         spendToken; interval must match; the per-cycle amount only has
+    ///         to meet the configured minimum, since DCA subscribers pick their own size.
     function userRegistered(
-        address        subscriber,
+        address        /* subscriber */,
         address        _spendToken,
         uint256        _amount,
-        bytes calldata params
-    ) external override onlySubscriptions returns (bool) {
+        uint256        _interval,
+        bytes calldata /* params */
+    ) external view override onlySubscriptions returns (bool) {
         if (_spendToken != spendToken) revert TokenMismatch(spendToken, _spendToken);
         if (_amount < amount)          revert AmountMismatch(amount, _amount);
-
-        userParams[subscriber] = params;
-        emit UserRegistered(subscriber, params);
-
+        if (_interval != interval)     revert IntervalMismatch(interval, _interval);
         return true;
     }
 

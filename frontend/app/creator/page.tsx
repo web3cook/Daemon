@@ -2,7 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useCreatorAgents } from "@/lib/api/hooks";
-import { formatMoney, monogram } from "@/lib/api/format";
+import { formatMoney } from "@/lib/api/format";
+import Avatar from "@/components/Avatar";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
 
@@ -20,8 +21,8 @@ export default function CreatorAgentsPage() {
           <div className="kicker">{"// CREATOR"}</div>
           <h1 className="page-title">Your listed agents</h1>
           <p className="page-sub">
-            Agents you operate on daemon. Subscribers pay you monthly, minus a 10% platform
-            fee.
+            Agents you operate on daemon. Subscribers pay you directly in USDC, and you
+            withdraw your earnings anytime. No platform fee.
           </p>
         </div>
         <button className="btn-primary lg" onClick={() => router.push("/creator/register")}>
@@ -51,7 +52,7 @@ export default function CreatorAgentsPage() {
         <div className="row-stack">
           {agents.map((c) => (
             <div key={c.agent_id} className="row-card">
-              <div className="avatar">{monogram(c.name)}</div>
+              <Avatar name={c.name} logo={c.logo} />
               <div className="row-id wide">
                 <div className="row-title">{c.name}</div>
                 <div className="row-sub">

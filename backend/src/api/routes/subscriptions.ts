@@ -3,70 +3,54 @@ import { isAddress } from 'viem'
 import { query } from '../../db/pool.js'
 import { ok, fail, money } from '../response.js'
 import { findOrCreateUser } from '../userdb.js'
-import { newSubscriptionId, newInvoiceId } from '../ids.js'
-import { serializeSubscription, type SubscriptionJoinRow } from '../serializers.js'
+import { newSubscriptionId } from '../ids.js'
+import { serializeSubscription } from '../serializers.js'
 import { config } from '../../config.js'
-import { chainName } from '../chain.js'
 
 export const subscriptionsRouter = Router()
 
 const SUBSCRIPTION_SELECT = `
   SELECT s.id, s.status, s.usage_count,
-         s.last_payment_amount, s.last_payment_currency, s.last_payment_time,
-         s.next_payment_amount, s.next_payment_currency, s.next_payment_time,
+         s.last_payment_amount, s.last_payment_time,
+         s.next_payment_amount, s.next_payment_time,
          s.started_at, s.cancelled_at,
-         a.agent_id, a.name AS agent_name, a.logo AS agent_logo, a.usage_label,
-         p.plan_id, p.name AS plan_name, p.billing_interval
+         s.service_address, s.onchain_sub_id,
+         a.agent_id, a.name AS agent_name, a.logo AS agent_logo
   FROM subscriptions s
   JOIN agents a ON a.agent_id = s.agent_id
-  JOIN plans p ON p.plan_id = s.plan_id
 `
 
-function nextPaymentDate(billingInterval: string, from: Date): Date | null {
+function nextPaymentDate(intervalSeconds: number, from: Date): Date {
   const d = new Date(from)
-  switch (billingInterval) {
-    case 'weekly':
-      d.setDate(d.getDate() + 7)
-      return d
-    case 'monthly':
-      d.setMonth(d.getMonth() + 1)
-      return d
-    case 'one_time':
-    default:
-      return null
-  }
+  d.setSeconds(d.getSeconds() + intervalSeconds)
+  return d
 }
 
 // POST /subscriptions
 subscriptionsRouter.post('/', async (req, res) => {
-  const { user_address, agent_id, plan_id } = req.body as { user_address?: string; agent_id?: string; plan_id?: string }
+  const { user_address, agent_id, onchain_sub_id, tx_hash } = req.body as {
+    user_address?: string
+    agent_id?: string
+    onchain_sub_id?: string
+    tx_hash?: string
+  }
 
-  if (!user_address || !isAddress(user_address, { strict: false }) || !agent_id || !plan_id) {
-    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required', plan_id: 'required' } })
+  if (!user_address || !isAddress(user_address, { strict: false }) || !agent_id || !onchain_sub_id) {
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { user_address: 'required', agent_id: 'required', onchain_sub_id: 'required' } })
     return
   }
 
-  const planRes = await query<{
-    plan_id: string
+  const agentRes = await query<{
     agent_id: string
     name: string
-    billing_interval: string
-    base_price_amount: string
-    base_price_currency: string
+    status: string
+    sub_price_amount: string
+    sub_price_currency: string
+    interval_seconds: number
+    service_address: string
   }>(
-    `SELECT p.plan_id, p.agent_id, p.name, p.billing_interval, p.base_price_amount, p.base_price_currency
-     FROM plans p WHERE p.plan_id = $1 AND p.agent_id = $2`,
-    [plan_id, agent_id],
-  )
-  const plan = planRes.rows[0]
-
-  if (!plan) {
-    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { plan_id: 'unknown plan for this agent' } })
-    return
-  }
-
-  const agentRes = await query<{ agent_id: string; name: string; status: string }>(
-    'SELECT agent_id, name, status FROM agents WHERE agent_id = $1',
+    `SELECT agent_id, name, status, sub_price_amount, sub_price_currency, interval_seconds, service_address
+     FROM agents WHERE agent_id = $1`,
     [agent_id],
   )
   const agent = agentRes.rows[0]
@@ -88,28 +72,37 @@ subscriptionsRouter.post('/', async (req, res) => {
 
   const subId = newSubscriptionId()
   const now = new Date()
-  const next = nextPaymentDate(plan.billing_interval, now)
+  const interval = agent.interval_seconds || 0
+  const next = nextPaymentDate(interval, now)
 
   await query(
-    `INSERT INTO subscriptions (id, user_id, agent_id, plan_id, status, next_payment_amount, next_payment_currency, next_payment_time, started_at)
-     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8)`,
-    [subId, user.user_id, agent_id, plan_id, plan.base_price_amount, plan.base_price_currency, next, now],
+    `INSERT INTO subscriptions (
+      id, user_id, agent_id, service_address, status, onchain_sub_id,
+      amount_per_cycle, interval_seconds, next_payment_amount, next_payment_time, tx_hash, started_at
+    ) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11)`,
+    [
+      subId,
+      user.user_id,
+      agent_id,
+      agent.service_address || null,
+      onchain_sub_id,
+      agent.sub_price_amount,
+      interval,
+      agent.sub_price_amount,
+      next,
+      tx_hash || null,
+      now
+    ],
   )
 
-  await query(
-    `INSERT INTO invoices (invoice_id, user_id, subscription_id, description, amount, currency, status, issued_at)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)`,
-    [newInvoiceId(), user.user_id, subId, `${agent.name} · ${plan.name}`, plan.base_price_amount, plan.base_price_currency, now],
-  )
-
-  const subRow = await query<SubscriptionJoinRow>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [subId])
+  const subRow = await query<any>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [subId])
 
   ok(res, 201, 'Subscription created', {
     subscription: serializeSubscription(subRow.rows[0]!),
     payment: {
       contract_address: config.subscriptionsAddr,
-      network: chainName,
-      amount: money(plan.base_price_amount, plan.base_price_currency),
+      network: 'arbitrum-sepolia',
+      amount: money(agent.sub_price_amount || '0', agent.sub_price_currency || 'USDC'),
       memo: subId,
     },
   })
@@ -141,7 +134,7 @@ subscriptionsRouter.post('/:subscription_id/cancel', async (req, res) => {
     [subscription_id],
   )
 
-  const updated = await query<SubscriptionJoinRow>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [subscription_id])
+  const updated = await query<any>(`${SUBSCRIPTION_SELECT} WHERE s.id = $1`, [subscription_id])
   const sub = updated.rows[0]!
 
   const cancelDate = sub.next_payment_time ?? new Date()

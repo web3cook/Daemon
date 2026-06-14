@@ -11,16 +11,24 @@ import {
   SERVICE_FACTORY_ADDRESS,
   USDC_ADDRESS,
   USDC_DECIMALS,
+  billingIntervalSeconds,
   serviceFactoryAbi,
 } from "@/lib/contracts";
-import type { AgentCategory, PricingModel, RegisterAgentInput } from "@/lib/api/types";
+import type {
+  AgentCategory,
+  AgentMode,
+  BillingInterval,
+  Money,
+  ParamField,
+  RegisterAgentInput,
+} from "@/lib/api/types";
 
 type TxPhase = "idle" | "switching" | "wallet" | "deploying";
 
 const PHASE_LABEL: Record<Exclude<TxPhase, "idle">, string> = {
   switching: "switching network…",
   wallet: "confirm in wallet…",
-  deploying: "deploying service…",
+  deploying: "registering on-chain…",
 };
 
 function errorMessage(e: unknown): string {
@@ -30,24 +38,36 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "couldn’t publish agent";
 }
 
+interface ParamDraft {
+  label: string;
+  type: "text" | "number";
+  required: boolean;
+}
+
 interface RegForm {
   name: string;
   cat: AgentCategory;
   desc: string;
+  endpoint: string;
   services: string;
-  model: PricingModel;
-  price: string;
-  usage: string;
+  mode: AgentMode;
+  subPrice: string;
+  oneTimePrice: string;
+  freq: BillingInterval;
+  params: ParamDraft[];
 }
 
 const INITIAL: RegForm = {
   name: "",
   cat: "finance",
   desc: "",
+  endpoint: "",
   services: "",
-  model: "flat",
-  price: "29",
-  usage: "0.10",
+  mode: "subscription",
+  subPrice: "29",
+  oneTimePrice: "1",
+  freq: "monthly",
+  params: [],
 };
 
 const CATEGORIES: { value: AgentCategory; label: string }[] = [
@@ -59,13 +79,37 @@ const CATEGORIES: { value: AgentCategory; label: string }[] = [
   { value: "other", label: "Other" },
 ];
 
-const MODEL_OPTS: { key: PricingModel; label: string; hint: string }[] = [
-  { key: "flat", label: "flat", hint: "Fixed $/mo" },
-  { key: "usage", label: "usage", hint: "Pay per run" },
-  { key: "hybrid", label: "hybrid", hint: "Base + per run" },
+const MODE_OPTS: { key: AgentMode; label: string; hint: string }[] = [
+  { key: "subscription", label: "subscription", hint: "Recurring billing" },
+  { key: "one_time", label: "one-time", hint: "Pay per run (x402)" },
+  { key: "both", label: "both", hint: "Subscription + one-time" },
 ];
 
-const STEP_LABELS = ["basics", "services + pricing", "review"];
+const FREQ_OPTS: { key: BillingInterval; label: string; hint: string }[] = [
+  { key: "weekly", label: "weekly", hint: "Paid every 7 days" },
+  { key: "monthly", label: "monthly", hint: "Paid every 30 days" },
+];
+
+const STEP_LABELS = ["basics", "pricing + inputs", "review"];
+
+function paramKey(label: string, i: number): string {
+  return (
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || `field_${i + 1}`
+  );
+}
+
+function buildAgentCardURI(name: string): string {
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "agent";
+  const base = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+  return `${base}/agents/${slug}-${Date.now().toString(36)}/card.json`;
+}
 
 export default function RegisterAgentPage() {
   const router = useRouter();
@@ -80,6 +124,8 @@ export default function RegisterAgentPage() {
   const [reg, setReg] = useState<RegForm>(INITIAL);
 
   const publishing = txPhase !== "idle" || registerMut.isPending;
+  const hasSub = reg.mode !== "one_time";
+  const hasOneTime = reg.mode !== "subscription";
 
   const patch = (p: Partial<RegForm>) => setReg((r) => ({ ...r, ...p }));
 
@@ -88,21 +134,40 @@ export default function RegisterAgentPage() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const priceSummary =
-    reg.model === "flat"
-      ? `$${reg.price || "0"}/mo flat`
-      : reg.model === "usage"
-        ? `$${reg.price || "0"}/mo min + $${reg.usage || "0"}/run`
-        : `$${reg.price || "0"}/mo base + $${reg.usage || "0"}/run`;
+  const cleanParams = reg.params.filter((p) => p.label.trim());
+
+  const addParam = () =>
+    setReg((r) => ({ ...r, params: [...r.params, { label: "", type: "text", required: true }] }));
+  const patchParam = (i: number, p: Partial<ParamDraft>) =>
+    setReg((r) => ({
+      ...r,
+      params: r.params.map((row, idx) => (idx === i ? { ...row, ...p } : row)),
+    }));
+  const removeParam = (i: number) =>
+    setReg((r) => ({ ...r, params: r.params.filter((_, idx) => idx !== i) }));
+
+  const period = reg.freq === "weekly" ? "wk" : "mo";
+  const priceSummary = [
+    hasSub ? `$${reg.subPrice || "0"}/${period}` : null,
+    hasOneTime ? `$${reg.oneTimePrice || "0"}/run` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const catLabel = CATEGORIES.find((c) => c.value === reg.cat)?.label ?? reg.cat;
 
   const reviewRows = [
-    { k: "NAME", v: reg.name || "—" },
+    { k: "NAME", v: reg.name || "-" },
     { k: "CATEGORY", v: catLabel },
-    { k: "DESCRIPTION", v: reg.desc || "—" },
-    { k: "SERVICES", v: chips.join(" · ") || "—" },
-    { k: "PRICING", v: priceSummary },
+    { k: "MODE", v: reg.mode.replace("_", " ") },
+    { k: "ENDPOINT", v: reg.endpoint || "-" },
+    { k: "DESCRIPTION", v: reg.desc || "-" },
+    { k: "SERVICES", v: chips.join(" · ") || "-" },
+    { k: "PRICING", v: priceSummary || "-" },
+    {
+      k: "SUBSCRIBER INPUTS",
+      v: cleanParams.length ? cleanParams.map((p) => p.label).join(" · ") : "none",
+    },
   ];
 
   const publish = async () => {
@@ -112,42 +177,71 @@ export default function RegisterAgentPage() {
       return;
     }
     if (!SERVICE_FACTORY_ADDRESS || !USDC_ADDRESS) {
-      showToast("contract addresses not configured — set NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS");
+      showToast("contract addresses not configured: set NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS");
+      return;
+    }
+    if (!reg.endpoint.trim()) {
+      showToast("an agent endpoint URL is required");
       return;
     }
 
-    // 1. Deploy the agent's Service contract on-chain via ServiceFactory,
-    //    then 2. register the agent in the backend with the new address.
-    let serviceAddress: string;
+    const agentCardURI = buildAgentCardURI(reg.name);
+
+    // 1. On-chain registration. Subscription-capable agents deploy a Service
+    //    and mint identity (createService); one-time-only agents mint identity
+    //    only (registerAgent). Both return the ERC-8004 agentId via an event.
+    let serviceAddress: string | null = null;
+    let onchainAgentId: string;
     try {
       if (chainId !== CONTRACT_CHAIN.id) {
         setTxPhase("switching");
         await switchChainAsync({ chainId: CONTRACT_CHAIN.id });
       }
+      if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
 
       setTxPhase("wallet");
-      const hash = await writeContractAsync({
-        abi: serviceFactoryAbi,
-        address: SERVICE_FACTORY_ADDRESS,
-        functionName: "createService",
-        chainId: CONTRACT_CHAIN.id,
-        args: [
-          wallet.address as `0x${string}`, // feeReceiver — creator's wallet
-          USDC_ADDRESS,
-          parseUnits(reg.price || "0", USDC_DECIMALS),
-        ],
-      });
-
-      setTxPhase("deploying");
-      if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      const [created] = parseEventLogs({
-        abi: serviceFactoryAbi,
-        eventName: "ServiceCreated",
-        logs: receipt.logs,
-      });
-      if (!created) throw new Error("ServiceCreated event not found in receipt");
-      serviceAddress = created.args.service;
+      if (hasSub) {
+        const hash = await writeContractAsync({
+          abi: serviceFactoryAbi,
+          address: SERVICE_FACTORY_ADDRESS,
+          functionName: "createService",
+          chainId: CONTRACT_CHAIN.id,
+          args: [
+            wallet.address as `0x${string}`, // feeReceiver: creator's wallet
+            USDC_ADDRESS,
+            parseUnits(reg.subPrice || "0", USDC_DECIMALS),
+            billingIntervalSeconds(reg.freq),
+            agentCardURI,
+          ],
+        });
+        setTxPhase("deploying");
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const [created] = parseEventLogs({
+          abi: serviceFactoryAbi,
+          eventName: "ServiceCreated",
+          logs: receipt.logs,
+        });
+        if (!created) throw new Error("ServiceCreated event not found in receipt");
+        serviceAddress = created.args.service;
+        onchainAgentId = created.args.agentId.toString();
+      } else {
+        const hash = await writeContractAsync({
+          abi: serviceFactoryAbi,
+          address: SERVICE_FACTORY_ADDRESS,
+          functionName: "registerAgent",
+          chainId: CONTRACT_CHAIN.id,
+          args: [agentCardURI],
+        });
+        setTxPhase("deploying");
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const [registered] = parseEventLogs({
+          abi: serviceFactoryAbi,
+          eventName: "AgentRegistered",
+          logs: receipt.logs,
+        });
+        if (!registered) throw new Error("AgentRegistered event not found in receipt");
+        onchainAgentId = registered.args.agentId.toString();
+      }
     } catch (e) {
       showToast(errorMessage(e));
       return;
@@ -155,24 +249,35 @@ export default function RegisterAgentPage() {
       setTxPhase("idle");
     }
 
+    const paramSchema: ParamField[] = cleanParams.map((p, i) => ({
+      key: paramKey(p.label, i),
+      label: p.label.trim(),
+      type: p.type,
+      required: p.required,
+    }));
+
+    const subPrice: Money | null = hasSub
+      ? { amount: reg.subPrice || "0", currency: "USDC" }
+      : null;
+    const oneTimePrice: Money | null = hasOneTime
+      ? { amount: reg.oneTimePrice || "0", currency: "USDC" }
+      : null;
+
     const input: RegisterAgentInput = {
       user_address: wallet.address,
       service_address: serviceAddress,
+      onchain_agent_id: onchainAgentId,
+      agent_card_uri: agentCardURI,
+      endpoint_url: reg.endpoint.trim(),
+      mode: reg.mode,
       name: reg.name.trim() || "Untitled agent",
       category: reg.cat,
-      short_description: reg.desc,
+      description: reg.desc,
       services: chips,
-      pricing_model: reg.model,
-      plans: [
-        {
-          name: "base",
-          billing_interval: "monthly",
-          base_price: { amount: reg.price || "0", currency: "USDC" },
-          usage_price: reg.model !== "flat" ? { amount: reg.usage || "0", currency: "USDC" } : null,
-          usage_unit: reg.model !== "flat" ? "run" : null,
-          description: reg.desc || "",
-        },
-      ],
+      param_schema: paramSchema,
+      sub_price: subPrice,
+      payment_frequency: hasSub ? reg.freq : null,
+      one_time_price: oneTimePrice,
     };
     registerMut.mutate(input, {
       onSuccess: (data) => {
@@ -234,13 +339,27 @@ export default function RegisterAgentPage() {
             </select>
           </div>
           <div className="field">
-            <label className="field-label">WHAT DOES IT DO?</label>
+            <label className="field-label">
+              AGENT ENDPOINT URL <span className="hint">(the HTTP service that does the work)</span>
+            </label>
+            <input
+              className="input"
+              value={reg.endpoint}
+              onChange={(e) => patch({ endpoint: e.target.value })}
+              placeholder="https://your-agent.example.com/run"
+            />
+          </div>
+          <div className="field">
+            <label className="field-label">
+              WHAT DOES IT DO?{" "}
+              <span className="hint">(we’ll generate a short card blurb from this)</span>
+            </label>
             <textarea
               className="input"
-              rows={3}
+              rows={4}
               value={reg.desc}
               onChange={(e) => patch({ desc: e.target.value })}
-              placeholder="One or two sentences subscribers will see on your card."
+              placeholder="Describe what your agent does, in as much detail as you like."
             />
           </div>
         </div>
@@ -271,14 +390,14 @@ export default function RegisterAgentPage() {
 
           <div className="field">
             <label className="field-label">
-              PRICING MODEL <span className="hint">(you choose — daemon supports all three)</span>
+              HOW DO SUBSCRIBERS PAY? <span className="hint">(subscription, one-time, or both)</span>
             </label>
             <div className="model-grid">
-              {MODEL_OPTS.map((m) => (
+              {MODE_OPTS.map((m) => (
                 <button
                   key={m.key}
-                  className={`model-opt${reg.model === m.key ? " on" : ""}`}
-                  onClick={() => patch({ model: m.key })}
+                  className={`model-opt${reg.mode === m.key ? " on" : ""}`}
+                  onClick={() => patch({ mode: m.key })}
                 >
                   <div className="model-opt-label">{m.label}</div>
                   <div className="model-opt-hint">{m.hint}</div>
@@ -287,25 +406,100 @@ export default function RegisterAgentPage() {
             </div>
           </div>
 
-          <div className="price-grid">
+          {hasSub && (
             <div className="field">
-              <label className="field-label">BASE PRICE ($/MO)</label>
-              <input
-                className="input mono-input"
-                value={reg.price}
-                onChange={(e) => patch({ price: e.target.value })}
-              />
+              <label className="field-label">
+                PAYMENT FREQUENCY <span className="hint">(how often the agent gets paid)</span>
+              </label>
+              <div className="model-grid">
+                {FREQ_OPTS.map((f) => (
+                  <button
+                    key={f.key}
+                    className={`model-opt${reg.freq === f.key ? " on" : ""}`}
+                    onClick={() => patch({ freq: f.key })}
+                  >
+                    <div className="model-opt-label">{f.label}</div>
+                    <div className="model-opt-hint">{f.hint}</div>
+                  </button>
+                ))}
+              </div>
             </div>
-            {reg.model !== "flat" && (
+          )}
+
+          <div className="price-grid">
+            {hasSub && (
               <div className="field">
-                <label className="field-label">USAGE PRICE ($/RUN)</label>
+                <label className="field-label">
+                  SUBSCRIPTION PRICE ($/{reg.freq === "weekly" ? "WK" : "MO"})
+                </label>
                 <input
                   className="input mono-input"
-                  value={reg.usage}
-                  onChange={(e) => patch({ usage: e.target.value })}
+                  value={reg.subPrice}
+                  onChange={(e) => patch({ subPrice: e.target.value })}
                 />
               </div>
             )}
+            {hasOneTime && (
+              <div className="field">
+                <label className="field-label">ONE-TIME PRICE ($/RUN)</label>
+                <input
+                  className="input mono-input"
+                  value={reg.oneTimePrice}
+                  onChange={(e) => patch({ oneTimePrice: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="field">
+            <label className="field-label">
+              SUBSCRIBER INPUTS{" "}
+              <span className="hint">(info your agent needs from each subscriber)</span>
+            </label>
+            <div className="param-editor">
+              {reg.params.length === 0 && (
+                <div className="param-empty">
+                  No inputs required. Add a field if your agent needs something from the subscriber
+                  (e.g. a wallet to monitor, a ticker, an email).
+                </div>
+              )}
+              {reg.params.map((p, i) => (
+                <div key={i} className="param-row">
+                  <input
+                    className="input param-label-input"
+                    value={p.label}
+                    onChange={(e) => patchParam(i, { label: e.target.value })}
+                    placeholder="Field label, e.g. Wallet to watch"
+                  />
+                  <select
+                    className="input param-type-input"
+                    value={p.type}
+                    onChange={(e) => patchParam(i, { type: e.target.value as "text" | "number" })}
+                  >
+                    <option value="text">text</option>
+                    <option value="number">number</option>
+                  </select>
+                  <label className="param-req">
+                    <input
+                      type="checkbox"
+                      checked={p.required}
+                      onChange={(e) => patchParam(i, { required: e.target.checked })}
+                    />
+                    required
+                  </label>
+                  <button
+                    className="param-remove"
+                    onClick={() => removeParam(i)}
+                    aria-label="remove field"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <button className="btn-ghost param-add" onClick={addParam}>
+                + add input field
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -319,8 +513,8 @@ export default function RegisterAgentPage() {
             </div>
           ))}
           <div className="review-note">
-            Publishing lists your agent in the marketplace immediately. daemon takes 10% of
-            each subscription; payouts run every Friday.
+            Publishing deploys your agent on-chain and lists it in the marketplace. There is no
+            platform fee, and you withdraw your earnings anytime.
           </div>
         </div>
       )}

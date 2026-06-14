@@ -1,8 +1,11 @@
 import { Router } from 'express'
+import { isAddress } from 'viem'
 import { query } from '../../db/pool.js'
 import { ok, fail, money } from '../response.js'
-import { newInvocationId } from '../ids.js'
-import { serializeAgentCard, serializePlan, type AgentRow, type PlanRow } from '../serializers.js'
+import { newRunId } from '../ids.js'
+import { serializeAgentCard, type AgentRow } from '../serializers.js'
+import { config } from '../../config.js'
+import { findOrCreateUser } from '../userdb.js'
 
 export const marketplaceRouter = Router()
 
@@ -12,8 +15,8 @@ const VALID_SORTS = new Set(['popular', 'rating', 'price_asc', 'price_desc', 'ne
 function sortClause(sort: string): string {
   switch (sort) {
     case 'rating':     return 'a.rating DESC'
-    case 'price_asc':  return 'from_price_amount ASC NULLS LAST'
-    case 'price_desc': return 'from_price_amount DESC NULLS LAST'
+    case 'price_asc':  return 'COALESCE(a.sub_price_amount, a.one_time_price_amount) ASC NULLS LAST'
+    case 'price_desc': return 'COALESCE(a.sub_price_amount, a.one_time_price_amount) DESC NULLS LAST'
     case 'newest':     return 'a.created_at DESC'
     case 'popular':
     default:           return 'subscriber_count DESC'
@@ -54,10 +57,6 @@ marketplaceRouter.get('/', async (req, res) => {
       SELECT agent_id, COUNT(*)::int AS live_subs
       FROM subscriptions WHERE status = 'active' GROUP BY agent_id
     ) sub ON sub.agent_id = a.agent_id
-    LEFT JOIN (
-      SELECT DISTINCT ON (agent_id) agent_id, base_price_amount AS from_price_amount, base_price_currency AS from_price_currency
-      FROM plans ORDER BY agent_id, base_price_amount ASC
-    ) p ON p.agent_id = a.agent_id
     WHERE ${where}
   `
 
@@ -69,11 +68,10 @@ marketplaceRouter.get('/', async (req, res) => {
     return
   }
 
-  const rowsRes = await query<AgentRow & { live_subs: number | null; from_price_amount: string | null; from_price_currency: string | null }>(
+  const rowsRes = await query<AgentRow & { live_subs: number | null }>(
     `SELECT a.*,
             COALESCE(sub.live_subs, 0) AS live_subs,
-            (a.base_subscriber_count + COALESCE(sub.live_subs, 0)) AS subscriber_count,
-            p.from_price_amount, p.from_price_currency
+            (a.base_subscriber_count + COALESCE(sub.live_subs, 0)) AS subscriber_count
      ${baseFrom}
      ORDER BY ${sortClause(sort)}
      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -113,52 +111,110 @@ marketplaceRouter.get('/:agent_id', async (req, res) => {
     return
   }
 
-  const plansRes = await query<PlanRow>(
-    'SELECT * FROM plans WHERE agent_id = $1 ORDER BY sort_order ASC',
-    [agent_id],
-  )
-
-  const plans = plansRes.rows.map(serializePlan)
-  const fromPlan = plansRes.rows[0]
-
   const card = serializeAgentCard(agent) as Record<string, unknown>
   card['subscriber_count'] = agent.base_subscriber_count + (agent.live_subs ?? 0)
-  card['from_price'] = fromPlan ? money(fromPlan.base_price_amount, fromPlan.base_price_currency) : null
+  card['from_price'] = agent.sub_price_amount 
+    ? money(agent.sub_price_amount, agent.sub_price_currency || 'USDC') 
+    : agent.one_time_price_amount 
+      ? money(agent.one_time_price_amount, 'USDC') 
+      : null
   card['description'] = agent.description ?? agent.short_description
-  card['plans'] = plans
 
   ok(res, 200, 'Data fetched successfully', { agent: card })
 })
 
-// POST /agents/:agent_id/invoke — x402 one-time/usage flow stub (§7, phase 2)
-marketplaceRouter.post('/:agent_id/invoke', async (req, res) => {
-  const { agent_id } = req.params
-  const paymentHeader = req.header('X-Payment')
+// GET /agents/:onchain_agent_id/card.json (AgentCard ERC-8004 hosting)
+marketplaceRouter.get('/:onchain_agent_id/card.json', async (req, res) => {
+  const { onchain_agent_id } = req.params
 
-  const agentRes = await query<{ agent_id: string }>('SELECT agent_id FROM agents WHERE agent_id = $1', [agent_id])
-  if (agentRes.rows.length === 0) {
+  const agentRes = await query<{
+    onchain_agent_id: string
+    name: string
+    description: string | null
+    short_description: string | null
+    services: string[]
+    endpoint_url: string | null
+    service_address: string | null
+    user_address: string | null
+  }>(
+    `SELECT a.onchain_agent_id, a.name, a.description, a.short_description, a.services, a.endpoint_url, a.service_address, u.user_address
+     FROM agents a
+     LEFT JOIN users u ON u.user_id = a.publisher_user_id
+     WHERE a.onchain_agent_id = $1`,
+    [onchain_agent_id],
+  )
+
+  const agent = agentRes.rows[0]
+  if (!agent) {
+    res.status(404).json({ error: 'AgentCard not found' })
+    return
+  }
+
+  res.json({
+    agentId: agent.onchain_agent_id,
+    name: agent.name,
+    description: agent.description ?? agent.short_description,
+    capabilities: agent.services,
+    serviceEndpoints: agent.endpoint_url ? [agent.endpoint_url] : [],
+    x402PaymentAddress: agent.user_address,
+    service_address: agent.service_address
+  })
+})
+
+// POST /runs (Recording a completed one-time run result)
+marketplaceRouter.post('/runs', async (req, res) => {
+  const { subscriber, agent_id, amount, status_message, link, tx_hash, success } = req.body as {
+    subscriber?: string
+    agent_id?: string
+    amount?: string
+    status_message?: string
+    link?: string
+    tx_hash?: string
+    success?: boolean
+  }
+
+  if (!subscriber || !isAddress(subscriber, { strict: false }) || !agent_id || !amount) {
+    fail(res, 400, 'Request validation failed', { error_code: 'validation_failed', field_errors: { subscriber: 'required', agent_id: 'required', amount: 'required' } })
+    return
+  }
+
+  const agentCheck = await query('SELECT 1 FROM agents WHERE agent_id = $1', [agent_id])
+  if (agentCheck.rowCount === 0) {
     fail(res, 404, 'Agent not found', {})
     return
   }
 
-  if (!paymentHeader) {
-    fail(res, 402, 'Payment required to invoke this service', {
-      payment_requirements: {
-        scheme: 'exact',
-        network: 'stellar',
-        amount: money('0.50'),
-        pay_to: 'GDAEMON…XLM',
-        memo: newInvocationId(),
-        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      },
-    })
-    return
-  }
+  const user = await findOrCreateUser(subscriber)
+  const runId = newRunId()
 
-  ok(res, 200, 'Service invoked', {
-    invocation_id: newInvocationId(),
-    status: 'completed',
-    output: {},
-    receipt: { tx_hash: 'stellar:stub', settled_at: new Date().toISOString() },
+  await query(
+    `INSERT INTO runs (
+      run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, ran_at
+    ) VALUES ($1, $2, $3, NULL, 'one_time', $4, 'USDC', $5, $6, $7, $8, now())`,
+    [
+      runId,
+      agent_id,
+      user.user_id,
+      amount,
+      status_message || null,
+      link || null,
+      success !== false,
+      tx_hash || null
+    ]
+  )
+
+  ok(res, 201, 'Run recorded successfully', {
+    run: {
+      run_id: runId,
+      agent_id,
+      user_id: user.user_id,
+      kind: 'one_time',
+      amount: money(amount, 'USDC'),
+      status_message,
+      link,
+      success: success !== false,
+      tx_hash,
+      ran_at: new Date().toISOString()
+    }
   })
 })

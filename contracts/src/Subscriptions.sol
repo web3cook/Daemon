@@ -47,7 +47,8 @@ event SubscriptionCreated(
     address spendToken,
     uint96  amountPerCycle,
     uint32  interval,
-    uint48  permitExpiry
+    uint48  permitExpiry,
+    bytes params
 );
 event SubscriptionCancelled(bytes32 indexed id, address indexed subscriber);
 event Executed(
@@ -55,7 +56,8 @@ event Executed(
     address indexed subscriber,
     address indexed service,
     uint96  amount,
-    uint48  executedAt
+    uint48  executedAt,
+    bytes params
 );
 event ExecutorSet(address indexed executor, bool enabled);
 event ServiceRegistered(address indexed service);
@@ -75,8 +77,12 @@ contract Subscriptions is Ownable2Step, ReentrancyGuard, Pausable {
     mapping(address => uint256)      public nonces;
 
     modifier onlyExecutor() {
-        if (!executors[msg.sender]) revert NotExecutor();
+        _onlyExecutor();
         _;
+    }
+
+    function _onlyExecutor() internal view {
+        if (!executors[msg.sender]) revert NotExecutor();
     }
 
     constructor(address _permit2, address _executor) Ownable(msg.sender) {
@@ -126,7 +132,9 @@ contract Subscriptions is Ownable2Step, ReentrancyGuard, Pausable {
             nonces[msg.sender]++
         ));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint96 _amount   = uint96(amountPerCycle);
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint32 _interval = uint32(interval);
         uint48 _expiry   = permitSingle.details.expiration;
         uint48 _now      = uint48(block.timestamp);
@@ -142,12 +150,12 @@ contract Subscriptions is Ownable2Step, ReentrancyGuard, Pausable {
             amountPerCycle:        _amount
         });
 
-        if (!IService(service).userRegistered(msg.sender, spendToken, amountPerCycle, params))
+        if (!IService(service).userRegistered(msg.sender, spendToken, amountPerCycle, _interval, params))
             revert ServiceRejectedSubscription(service);
 
         permit2.permit(msg.sender, permitSingle, signature);
 
-        emit SubscriptionCreated(id, msg.sender, service, spendToken, _amount, _interval, _expiry);
+        emit SubscriptionCreated(id, msg.sender, service, spendToken, _amount, _interval, _expiry, params);
     }
 
     /// @notice Cancel an active subscription, preventing any further executions.
@@ -194,7 +202,7 @@ contract Subscriptions is Ownable2Step, ReentrancyGuard, Pausable {
         permit2.transferFrom(_subscriber, _service, uint160(_amount), _spendToken);
         IService(_service).execute(_subscriber, _spendToken, _amount, params);
 
-        emit Executed(id, _subscriber, _service, _amount, uint48(block.timestamp));
+        emit Executed(id, _subscriber, _service, _amount, uint48(block.timestamp), params);
     }
 
     /// @notice Enable or disable an executor EOA.

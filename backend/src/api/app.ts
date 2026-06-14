@@ -1,10 +1,12 @@
 import express from 'express'
+import swaggerUi from 'swagger-ui-express'
 import { logger } from '../logger.js'
 import { authRouter } from './routes/auth.js'
 import { userRouter } from './routes/user.js'
 import { marketplaceRouter } from './routes/marketplace.js'
 import { subscriptionsRouter } from './routes/subscriptions.js'
 import { creatorRouter } from './routes/creator.js'
+import { swaggerDocument } from './swagger.js'
 
 export function buildApp(): express.Express {
   const app = express()
@@ -27,6 +29,9 @@ export function buildApp(): express.Express {
     logger.info({ method: req.method, path: req.path }, 'request')
     next()
   })
+
+  // Mount Swagger UI Documentation
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument))
 
   const v1 = express.Router()
   v1.use('/auth', authRouter)

@@ -4,9 +4,10 @@ pragma solidity ^0.8.24;
 import {Script, console} from "forge-std/Script.sol";
 
 import {Subscriptions}             from "../src/Subscriptions.sol";
-import {SIPService}                from "../src/SIPService.sol";
 import {ServiceFactory}            from "../src/ServiceFactory.sol";
-import {TestERC20, TestAggregator} from "./helpers/MockContracts.sol";
+import {ERC8004IdentityRegistry}   from "../src/ERC8004IdentityRegistry.sol";
+import {ERC8004ValidationRegistry} from "../src/ERC8004ValidationRegistry.sol";
+import {TestERC20} from "./helpers/MockContracts.sol";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DeployTestnet — Arbitrum Sepolia
@@ -15,14 +16,12 @@ import {TestERC20, TestAggregator} from "./helpers/MockContracts.sol";
 //   1. Mock tokens (USDC, WETH, WBTC)
 //   2. TestAggregator
 //   3. Subscriptions              (permit2, executor EOA)
-//   4. SIPService                 (subscriptions, feeReceiver, spendToken, minAmount, maxFeeBps, aggregator)
-//   5. ServiceFactory             (subscriptions)
-//   6. Wire: setFactory + registerService + addToken × 2
-//   7. Mint test USDC to deployer
-//   8. Save addresses to deployments/arbitrum-sepolia.json
-//
-// ERC-8004 registries are intentionally not deployed — agent identity and
-// trust scores will be added later.
+//   4. ERC-8004 IdentityRegistry + ValidationRegistry
+//   5. ServiceFactory             (subscriptions, identityRegistry)
+//   6. Wire: setRegistrar + setFactory
+//   7. Optional SIPService        (direct deploy with registered identity)
+//   8. Mint test USDC to deployer
+//   9. Save addresses to deployments/arbitrum-sepolia.json
 //
 // Run:
 //   forge script script/DeployTestnet.s.sol \
@@ -42,6 +41,9 @@ contract DeployTestnet is Script {
     // Minimum per-cycle spend SIPService accepts at subscribe time (1 mUSDC)
     uint256 constant MIN_AMOUNT_PER_CYCLE = 1e6;
 
+    // Default DCA interval enforced by SIPService at subscribe time
+    uint32 constant DEFAULT_INTERVAL = 7 days;
+
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer    = vm.addr(deployerKey);
@@ -52,13 +54,13 @@ contract DeployTestnet is Script {
         vm.startBroadcast(deployerKey);
 
         // ── 1. Mock tokens ────────────────────────────────────────────────────
-        TestERC20 mockUSDC = new TestERC20("Mock USDC",  "mUSDC", 6);
-        TestERC20 mockWETH = new TestERC20("Mock WETH",  "mWETH", 18);
-        TestERC20 mockWBTC = new TestERC20("Mock WBTC",  "mWBTC", 8);
+        TestERC20 mockUsdc = new TestERC20("Mock USDC",  "mUSDC", 6);
+        TestERC20 mockWeth = new TestERC20("Mock WETH",  "mWETH", 18);
+        TestERC20 mockWbtc = new TestERC20("Mock WBTC",  "mWBTC", 8);
 
-        console.log("mockUSDC:", address(mockUSDC));
-        console.log("mockWETH:", address(mockWETH));
-        console.log("mockWBTC:", address(mockWBTC));
+        console.log("mockUSDC:", address(mockUsdc));
+        console.log("mockWETH:", address(mockWeth));
+        console.log("mockWBTC:", address(mockWbtc));
 
         // ── 2. TestAggregator ─────────────────────────────────────────────────
         // TestAggregator aggregator = new TestAggregator();
@@ -71,45 +73,58 @@ contract DeployTestnet is Script {
         );
         console.log("Subscriptions:", address(subs));
 
-        // ── 4. SIPService ─────────────────────────────────────────────────────
-        // SIPService sipService = new SIPService(
-        //     address(subs),
-        //     deployer,          // feeReceiver (protocol fee recipient)
-        //     address(mockUSDC), // spendToken subscribers pay with
-        //     MIN_AMOUNT_PER_CYCLE,
-        //     MAX_FEE_BPS,
-        //     address(aggregator)
-        // );
-        // console.log("SIPService:", address(sipService));
+        // ── 4. ERC-8004 registries ──────────────────────────────────────────────
+        ERC8004IdentityRegistry identityRegistry = new ERC8004IdentityRegistry();
+        ERC8004ValidationRegistry validationRegistry = new ERC8004ValidationRegistry(deployer);
+        console.log("IdentityRegistry:",   address(identityRegistry));
+        console.log("ValidationRegistry:", address(validationRegistry));
 
         // ── 5. ServiceFactory ─────────────────────────────────────────────────
-        ServiceFactory serviceFactory = new ServiceFactory(address(subs));
+        ServiceFactory serviceFactory = new ServiceFactory(
+            address(subs),
+            address(identityRegistry)
+        );
         console.log("ServiceFactory:", address(serviceFactory));
 
         // ── 6. Wire up ────────────────────────────────────────────────────────
+        identityRegistry.setRegistrar(address(serviceFactory), true);
         subs.setFactory(address(serviceFactory));
+        console.log("Registrar + factory wired.");
+
+        // ── 7. Optional SIPService (uncomment when aggregator is deployed) ────
+        // uint256 sipAgentId = identityRegistry.register("https://example.com/.well-known/agent.json");
+        // SIPService sipService = new SIPService(
+        //     address(subs),
+        //     deployer,
+        //     address(mockUSDC),
+        //     MIN_AMOUNT_PER_CYCLE,
+        //     DEFAULT_INTERVAL,
+        //     sipAgentId,
+        //     MAX_FEE_BPS,
+        //     address(aggregator)
+        // );
         // subs.registerService(address(sipService));
         // sipService.addToken(address(mockWETH));
         // sipService.addToken(address(mockWBTC));
-        console.log("Factory set. Service registered. Output tokens whitelisted.");
+        // console.log("SIPService:", address(sipService));
 
-        // ── 7. Mint test USDC so the deployer can create a subscription ───────
-        mockUSDC.mint(deployer, 10_000e6); // 10,000 test USDC
+        // ── 8. Mint test USDC so the deployer can create a subscription ───────
+        mockUsdc.mint(deployer, 10_000e6); // 10,000 test USDC
         console.log("Minted 10,000 mUSDC to deployer");
 
         vm.stopBroadcast();
 
-        // ── 8. Save addresses ─────────────────────────────────────────────────
+        // ── 9. Save addresses ─────────────────────────────────────────────────
         string memory json = "testnet";
-        vm.serializeAddress(json, "permit2",            PERMIT2);
-        vm.serializeAddress(json, "mockUSDC",           address(mockUSDC));
-        vm.serializeAddress(json, "mockWETH",           address(mockWETH));
-        vm.serializeAddress(json, "mockWBTC",           address(mockWBTC));
-        // vm.serializeAddress(json, "aggregator",         address(aggregator));
-        vm.serializeAddress(json, "subscriptions",      address(subs));
-        // vm.serializeAddress(json, "sipService",         address(sipService));
+        vm.serializeAddress(json, "permit2",              PERMIT2);
+        vm.serializeAddress(json, "mockUSDC",             address(mockUsdc));
+        vm.serializeAddress(json, "mockWETH",             address(mockWeth));
+        vm.serializeAddress(json, "mockWBTC",             address(mockWbtc));
+        vm.serializeAddress(json, "identityRegistry",     address(identityRegistry));
+        vm.serializeAddress(json, "validationRegistry",     address(validationRegistry));
+        vm.serializeAddress(json, "subscriptions",        address(subs));
         string memory out =
-        vm.serializeAddress(json, "serviceFactory",     address(serviceFactory));
+        vm.serializeAddress(json, "serviceFactory",       address(serviceFactory));
 
         vm.writeJson(out, "./deployments/arbitrum-sepolia.json");
         console.log("Addresses saved to ./deployments/arbitrum-sepolia.json");

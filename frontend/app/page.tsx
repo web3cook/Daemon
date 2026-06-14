@@ -2,7 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useAgents } from "@/lib/api/hooks";
-import { formatMoney, monogram } from "@/lib/api/format";
+import { formatMoney } from "@/lib/api/format";
+import Avatar from "@/components/Avatar";
 import { ErrorState, LoadingState, EmptyState } from "@/components/States";
 
 export default function MarketplacePage() {
@@ -25,7 +26,7 @@ export default function MarketplacePage() {
       {isLoading && <LoadingState label="loading agents…" />}
       {isError && <ErrorState error={error} onRetry={() => refetch()} />}
       {!isLoading && !isError && agents.length === 0 && (
-        <EmptyState title="No agents yet" sub="Check back soon — creators are onboarding." />
+        <EmptyState title="No agents yet" sub="Check back soon, creators are onboarding." />
       )}
 
       {agents.length > 0 && (
@@ -37,11 +38,11 @@ export default function MarketplacePage() {
               onClick={() => router.push(`/agents/${a.agent_id}`)}
             >
               <div className="agent-card-head">
-                <div className="avatar">{monogram(a.name)}</div>
+                <Avatar name={a.name} logo={a.logo} />
                 <div>
                   <div className="agent-name">{a.name}</div>
                   <div className="agent-meta">
-                    ★ {a.rating} · {a.tagline}
+                    ★ {a.rating} · {a.tagline} · trust {a.trust_score}
                   </div>
                 </div>
               </div>
@@ -55,10 +56,21 @@ export default function MarketplacePage() {
               </div>
               <div className="agent-card-foot">
                 <div className="price-label">
-                  {formatMoney(a.from_price, { cents: false })}
-                  <span className="price-unit">/mo</span>
+                  {a.sub_price ? (
+                    <>
+                      {formatMoney(a.sub_price, { cents: false })}
+                      <span className="price-unit">/{a.payment_frequency === "weekly" ? "wk" : "mo"}</span>
+                    </>
+                  ) : a.one_time_price ? (
+                    <>
+                      {formatMoney(a.one_time_price, { cents: false })}
+                      <span className="price-unit">/run</span>
+                    </>
+                  ) : (
+                    <span className="price-unit">free</span>
+                  )}
                 </div>
-                <div className="view-plans">view plans →</div>
+                <div className="view-plans">view agent →</div>
               </div>
             </article>
           ))}

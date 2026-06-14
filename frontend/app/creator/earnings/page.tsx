@@ -17,8 +17,10 @@ export default function EarningsPage() {
   const head = (
     <div className="page-head">
       <div className="kicker">{"// EARNINGS"}</div>
-      <h1 className="page-title">Payouts &amp; revenue</h1>
-      <p className="page-sub">Net of daemon&apos;s 10% platform fee. Payouts run every Friday.</p>
+      <h1 className="page-title">Revenue &amp; withdrawals</h1>
+      <p className="page-sub">
+        Earnings accrue in each agent&apos;s Service contract. Withdraw anytime. No platform fee.
+      </p>
     </div>
   );
 
@@ -53,14 +55,14 @@ export default function EarningsPage() {
     );
   }
 
-  const { stats, revenue_by_month, payouts, earnings_by_agent } = data;
-  const maxRev = Math.max(...revenue_by_month.map((d) => Number(d.net.amount)), 1);
+  const { stats, revenue_by_month, withdrawals, earnings_by_agent } = data;
+  const maxRev = Math.max(...revenue_by_month.map((d) => Number(d.amount.amount)), 1);
 
   const statCards = [
     {
-      k: "MRR (NET)",
-      v: formatMoney(stats.net_monthly_recurring_revenue),
-      sub: `+${stats.mrr_change_percent}% vs last month`,
+      k: "MRR",
+      v: formatMoney(stats.monthly_recurring_revenue),
+      sub: "monthly recurring",
       up: true,
     },
     {
@@ -70,15 +72,15 @@ export default function EarningsPage() {
       up: true,
     },
     {
-      k: "NEXT PAYOUT",
-      v: formatMoney(stats.next_payout.amount),
-      sub: formatDate(stats.next_payout.payout_at),
+      k: "WITHDRAWABLE NOW",
+      v: formatMoney(stats.withdrawable_balance),
+      sub: "in your contracts",
       up: false,
     },
     {
       k: "LIFETIME REVENUE",
       v: formatMoney(stats.lifetime_revenue),
-      sub: "all time",
+      sub: `${formatMoney(stats.total_withdrawn)} withdrawn`,
       up: false,
     },
   ];
@@ -100,15 +102,15 @@ export default function EarningsPage() {
       <div className="earnings-grid">
         <div className="panel">
           <div className="section-label chart">
-            NET REVENUE · LAST {revenue_by_month.length} MONTHS
+            REVENUE · LAST {revenue_by_month.length} MONTHS
           </div>
           <div className="bars">
             {revenue_by_month.map((d, i) => (
               <div key={d.month} className="bar-col">
-                <div className="bar-amt">{compactMoney(d.net.amount)}</div>
+                <div className="bar-amt">{compactMoney(d.amount.amount)}</div>
                 <div
                   className={`bar${i === revenue_by_month.length - 1 ? " hot" : ""}`}
-                  style={{ height: `${Math.round((Number(d.net.amount) / maxRev) * 100)}%` }}
+                  style={{ height: `${Math.round((Number(d.amount.amount) / maxRev) * 100)}%` }}
                 />
                 <div className="bar-month">{formatMonth(d.month)}</div>
               </div>
@@ -118,13 +120,16 @@ export default function EarningsPage() {
 
         <div className="earnings-side">
           <div className="panel">
-            <div className="section-label">RECENT PAYOUTS</div>
+            <div className="section-label">RECENT WITHDRAWALS</div>
             <div className="payout-list">
-              {payouts.map((po) => (
-                <div key={po.payout_id} className="payout-row">
-                  <div className="payout-date">{formatDate(po.payout_at)}</div>
-                  <div className="payout-amt">{formatMoney(po.amount, { cents: true })}</div>
-                  <div className={`pill${po.status === "paid" ? " ok" : ""}`}>{po.status}</div>
+              {withdrawals.length === 0 && (
+                <div className="billing-note">No withdrawals yet.</div>
+              )}
+              {withdrawals.map((w) => (
+                <div key={w.withdrawal_id} className="payout-row">
+                  <div className="payout-date">{formatDate(w.withdrawn_at)}</div>
+                  <div className="payout-amt">{formatMoney(w.amount, { cents: true })}</div>
+                  <div className="pill ok">withdrawn</div>
                 </div>
               ))}
             </div>

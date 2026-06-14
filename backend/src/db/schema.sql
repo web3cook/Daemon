@@ -15,92 +15,107 @@ CREATE TABLE IF NOT EXISTS auth_nonces (
   expires_at   TIMESTAMPTZ NOT NULL
 );
 
+-- Drop old tables to migrate smoothly to v2 schema
+DROP TABLE IF EXISTS system_constants CASCADE;
+DROP TABLE IF EXISTS withdrawals CASCADE;
+DROP TABLE IF EXISTS runs CASCADE;
+DROP TABLE IF EXISTS invoices CASCADE;
+DROP TABLE IF EXISTS payouts CASCADE;
+DROP TABLE IF EXISTS subscriptions CASCADE;
+DROP TABLE IF EXISTS plans CASCADE;
+DROP TABLE IF EXISTS agents CASCADE;
+
 CREATE TABLE IF NOT EXISTS agents (
-  agent_id           TEXT PRIMARY KEY,
-  slug               TEXT UNIQUE NOT NULL,
-  name               TEXT NOT NULL,
-  icon               TEXT,
-  logo               TEXT,
-  category           TEXT NOT NULL,
-  tagline            TEXT,
-  short_description  TEXT,
-  description        TEXT,
-  services           TEXT[] NOT NULL DEFAULT '{}',
-  rating             NUMERIC(3,2) NOT NULL DEFAULT 0,
-  rating_count       INT NOT NULL DEFAULT 0,
+  agent_id              TEXT PRIMARY KEY,            -- ulid
+  slug                  TEXT UNIQUE NOT NULL,
+  publisher_user_id     TEXT REFERENCES users(user_id),
+  publisher_name        TEXT,
+  name                  TEXT NOT NULL,
+  icon                  TEXT,
+  logo                  TEXT,
+  category              TEXT NOT NULL,
+  tagline               TEXT,
+  short_description     TEXT,
+  description           TEXT,
+  services              TEXT[] NOT NULL DEFAULT '{}',   -- display chips, not addresses
+  mode                  TEXT NOT NULL DEFAULT 'subscription', -- subscription | one_time | both
+  sub_price_amount      NUMERIC(18,6),                 -- subscription price per cycle
+  sub_price_currency    TEXT NOT NULL DEFAULT 'USDC',
+  interval_seconds      INT,                           -- on-chain interval; null for one_time-only
+  payment_frequency     TEXT,                          -- display label (weekly/monthly)
+  one_time_price_amount NUMERIC(18,6),                 -- x402 price; null unless one_time/both
+  param_schema          JSONB NOT NULL DEFAULT '[]',   -- field definitions subscribers must supply
+  service_address       TEXT,                          -- Service contract; null for one_time-only
+  onchain_agent_id      NUMERIC,                       -- ERC-8004 agentId (uint256)
+  agent_card_uri        TEXT,                          -- AgentCard JSON URL (token URI)
+  endpoint_url          TEXT,                          -- creator-hosted agent endpoint
+  trust_score           INT NOT NULL DEFAULT 0,        -- cached from ValidationRegistry (0..100)
+  rating                NUMERIC(3,2) NOT NULL DEFAULT 0, -- subscriber reviews (future, keep)
+  rating_count          INT NOT NULL DEFAULT 0,
   base_subscriber_count INT NOT NULL DEFAULT 0,
-  publisher_name     TEXT,
-  publisher_user_id  TEXT REFERENCES users(user_id),
-  pricing_model      TEXT NOT NULL DEFAULT 'flat',
-  status             TEXT NOT NULL DEFAULT 'live',
-  onchain            BOOLEAN NOT NULL DEFAULT false,
-  usage_label        TEXT,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+  status                TEXT NOT NULL DEFAULT 'live',
+  onchain               BOOLEAN NOT NULL DEFAULT false,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS plans (
-  plan_id             TEXT PRIMARY KEY,
-  agent_id            TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  name                TEXT NOT NULL,
-  billing_interval    TEXT NOT NULL,
-  base_price_amount   NUMERIC(18,6) NOT NULL,
-  base_price_currency TEXT NOT NULL DEFAULT 'USDC',
-  usage_price_amount  NUMERIC(18,6),
-  usage_unit          TEXT,
-  description         TEXT,
-  sort_order          INT NOT NULL DEFAULT 0
-);
+CREATE INDEX IF NOT EXISTS idx_agents_service       ON agents(service_address);
+CREATE INDEX IF NOT EXISTS idx_agents_onchain_agent ON agents(onchain_agent_id);
 
 CREATE TABLE IF NOT EXISTS subscriptions (
-  id                  TEXT PRIMARY KEY,
+  id                  TEXT PRIMARY KEY,               -- ulid (internal)
   user_id             TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   agent_id            TEXT NOT NULL REFERENCES agents(agent_id),
-  plan_id             TEXT NOT NULL REFERENCES plans(plan_id),
-  status              TEXT NOT NULL DEFAULT 'active',
-  onchain_sub_id      TEXT,
+  service_address     TEXT,
+  status              TEXT NOT NULL DEFAULT 'active', -- active | cancelled | expired
+  onchain_sub_id      TEXT,                           -- bytes32 id from the chain
+  amount_per_cycle    NUMERIC(18,6),
+  interval_seconds    INT,
+  params              BYTEA,                          -- raw subscriber params from the event
   usage_count         INT NOT NULL DEFAULT 0,
-  last_payment_amount   NUMERIC(18,6),
-  last_payment_currency TEXT DEFAULT 'USDC',
-  last_payment_time     TIMESTAMPTZ,
-  next_payment_amount   NUMERIC(18,6),
-  next_payment_currency TEXT DEFAULT 'USDC',
-  next_payment_time     TIMESTAMPTZ,
+  last_payment_amount NUMERIC(18,6),
+  last_payment_time   TIMESTAMPTZ,
+  next_payment_amount NUMERIC(18,6),
+  next_payment_time   TIMESTAMPTZ,
+  tx_hash             TEXT,
   started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   cancelled_at        TIMESTAMPTZ,
   UNIQUE (user_id, agent_id)
 );
 
-CREATE TABLE IF NOT EXISTS invoices (
-  invoice_id      TEXT PRIMARY KEY,
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  run_id          TEXT PRIMARY KEY,                  -- ulid
+  agent_id        TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
   user_id         TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
-  description     TEXT,
+  subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL, -- null for one_time
+  kind            TEXT NOT NULL,                     -- subscription | one_time
   amount          NUMERIC(18,6) NOT NULL,
   currency        TEXT NOT NULL DEFAULT 'USDC',
-  status          TEXT NOT NULL DEFAULT 'paid',
+  status_message  TEXT,                              -- e.g. "mail sent", "DCA bought"
+  link            TEXT,                              -- optional result link / tx
+  success         BOOLEAN NOT NULL DEFAULT true,
   tx_hash         TEXT,
-  issued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  paid_at         TIMESTAMPTZ
+  ran_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS payouts (
-  payout_id  TEXT PRIMARY KEY,
-  agent_id   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  amount     NUMERIC(18,6) NOT NULL,
-  currency   TEXT NOT NULL DEFAULT 'USDC',
-  status     TEXT NOT NULL DEFAULT 'paid',
-  tx_hash    TEXT,
-  payout_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE INDEX IF NOT EXISTS idx_runs_user         ON runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_runs_agent        ON runs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_runs_subscription ON runs(subscription_id);
+
+CREATE TABLE IF NOT EXISTS withdrawals (
+  withdrawal_id   TEXT PRIMARY KEY,                  -- ulid
+  agent_id        TEXT REFERENCES agents(agent_id) ON DELETE SET NULL,
+  service_address TEXT NOT NULL,
+  amount          NUMERIC(18,6) NOT NULL,
+  currency        TEXT NOT NULL DEFAULT 'USDC',
+  tx_hash         TEXT,
+  withdrawn_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS base_subscriber_count INT NOT NULL DEFAULT 0;
-ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS usage_count INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_withdrawals_agent ON withdrawals(agent_id);
 
-DO $$ BEGIN
-  ALTER TABLE plans ADD CONSTRAINT plans_agent_id_name_key UNIQUE (agent_id, name);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices(user_id);
-CREATE INDEX IF NOT EXISTS idx_plans_agent ON plans(agent_id);
+CREATE TABLE IF NOT EXISTS system_constants (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Service}       from "./Service.sol";
-import {Subscriptions} from "./Subscriptions.sol";
+import {Service}                    from "./Service.sol";
+import {Subscriptions}              from "./Subscriptions.sol";
+import {IERC8004IdentityRegistry}   from "./interfaces/IERC8004IdentityRegistry.sol";
 
 /// @title ServiceFactory
-/// @notice Deploys a dedicated Service contract per agent registration and
-///         registers it with the Subscriptions contract. Permissionless: the
-///         caller becomes the Service owner (the agent). Requires
-///         Subscriptions.setFactory(address(this)) to have been called so the
-///         registerService() call succeeds.
+/// @notice Platform entry point for agent registration. Deploys a dedicated
+///         Service per subscription agent, mints ERC-8004 identity, and
+///         registers the service with Subscriptions.
 contract ServiceFactory {
     address public immutable subscriptions;
+    IERC8004IdentityRegistry public immutable identityRegistry;
 
     mapping(address => address[]) public servicesByAgent;
     mapping(address => bool)      public isFactoryService;
+    mapping(uint256 => address)     public serviceByAgentId;
+    mapping(address => uint256)     public agentIdByService;
     address[] public allServices;
 
     event ServiceCreated(
@@ -22,43 +24,57 @@ contract ServiceFactory {
         address indexed service,
         address indexed spendToken,
         uint256 amount,
-        address feeReceiver
+        address feeReceiver,
+        uint256 agentId
     );
+
+    event AgentRegistered(address indexed agent, uint256 indexed agentId);
 
     error ZeroAddress();
 
-    constructor(address _subscriptions) {
-        if (_subscriptions == address(0)) revert ZeroAddress();
-        subscriptions = _subscriptions;
+    constructor(address _subscriptions, address _identityRegistry) {
+        if (_subscriptions == address(0))     revert ZeroAddress();
+        if (_identityRegistry == address(0))  revert ZeroAddress();
+        subscriptions    = _subscriptions;
+        identityRegistry = IERC8004IdentityRegistry(_identityRegistry);
     }
 
-    /// @notice Deploy a Service for the caller and register it with
-    ///         Subscriptions so users can subscribe to it immediately.
-    /// @param feeReceiver Where the agent's withdrawn earnings are sent.
-    /// @param spendToken  Token subscribers pay with (e.g. USDC).
-    /// @param amount      Required payment amount per cycle.
+    /// @notice Deploy a Service for the caller, mint identity, and register with Subscriptions.
     function createService(
         address feeReceiver,
         address spendToken,
-        uint256 amount
-    ) external returns (address) {
-        Service service = new Service(
+        uint256 amount,
+        uint32  interval,
+        string calldata agentCardURI
+    ) external returns (address service, uint256 agentId) {
+        agentId = identityRegistry.registerFor(msg.sender, agentCardURI);
+
+        Service deployed = new Service(
             msg.sender,
             subscriptions,
             feeReceiver,
             spendToken,
-            amount
+            amount,
+            interval,
+            agentId
         );
+        service = address(deployed);
 
-        Subscriptions(subscriptions).registerService(address(service));
+        Subscriptions(subscriptions).registerService(service);
 
-        servicesByAgent[msg.sender].push(address(service));
-        isFactoryService[address(service)] = true;
-        allServices.push(address(service));
+        servicesByAgent[msg.sender].push(service);
+        isFactoryService[service] = true;
+        allServices.push(service);
+        serviceByAgentId[agentId] = service;
+        agentIdByService[service] = agentId;
 
-        emit ServiceCreated(msg.sender, address(service), spendToken, amount, feeReceiver);
+        emit ServiceCreated(msg.sender, service, spendToken, amount, feeReceiver, agentId);
+    }
 
-        return address(service);
+    /// @notice Register a one-time-only agent identity with no Service contract.
+    function registerAgent(string calldata agentCardURI) external returns (uint256 agentId) {
+        agentId = identityRegistry.registerFor(msg.sender, agentCardURI);
+        emit AgentRegistered(msg.sender, agentId);
     }
 
     function getServicesByAgent(address agent) external view returns (address[] memory) {

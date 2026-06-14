@@ -20,7 +20,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "daemon — agents that work for you",
+  title: "daemon · agents that work for you",
   description:
     "Subscribe to AI agents that quietly work in the background, or list your own and earn. Wallet-native billing, creator payouts every Friday.",
 };

@@ -31,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!BASE_URL) {
     throw new ApiError(
       "config",
-      "NEXT_PUBLIC_API_BASE_URL is not set — point it at the backend in .env.local",
+      "NEXT_PUBLIC_API_BASE_URL is not set: point it at the backend in .env.local",
     );
   }
 
@@ -75,9 +75,14 @@ export function apiGet<T>(path: string, query?: QueryParams): Promise<T> {
   return request<T>(`${path}${qs}`, { method: "GET" });
 }
 
-export function apiPost<T>(path: string, body?: unknown): Promise<T> {
+export function apiPost<T>(
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
   return request<T>(path, {
     method: "POST",
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    ...(headers ? { headers } : {}),
   });
 }
