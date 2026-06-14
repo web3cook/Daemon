@@ -123,6 +123,13 @@ export const subscriptionsAbi = [
     outputs: [],
   },
   {
+    type: "function",
+    name: "cancel",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "id", type: "bytes32" }],
+    outputs: [],
+  },
+  {
     type: "event",
     name: "SubscriptionCreated",
     inputs: [
@@ -134,6 +141,14 @@ export const subscriptionsAbi = [
       { name: "interval", type: "uint32", indexed: false },
       { name: "permitExpiry", type: "uint48", indexed: false },
       { name: "params", type: "bytes", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "SubscriptionCancelled",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "subscriber", type: "address", indexed: true },
     ],
   },
 ] as const;

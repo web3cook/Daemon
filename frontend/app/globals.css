@@ -1612,6 +1612,8 @@ select.input {
   background: transparent;
   padding: 0;
   cursor: pointer;
+  /* buttons don't inherit text color; set it so "daemon" isn't browser-default black */
+  color: var(--ink);
 }
 
 /* agent logo image inside the avatar frame */

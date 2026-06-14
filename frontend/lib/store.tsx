@@ -19,7 +19,12 @@ import { ApiError } from "./api/client";
 import { useCancelSubscription, useOnboard, useSubscribe } from "./api/hooks";
 import { type InvokeAgentDetails } from "./api/endpoints";
 import { USDC_DECIMALS, billingIntervalSeconds } from "./contracts";
-import { SUBSCRIBE_PHASE_LABEL, useSubscribeOnChain } from "./useSubscribeOnChain";
+import {
+  CANCEL_PHASE_LABEL,
+  SUBSCRIBE_PHASE_LABEL,
+  useCancelOnChain,
+  useSubscribeOnChain,
+} from "./useSubscribeOnChain";
 import type { AgentMode, BillingInterval, Money, ParamField } from "./api/types";
 
 export type Role = "sub" | "cre";
@@ -69,7 +74,10 @@ interface AppState {
   confirmSubscribe: (durationSeconds: number, paramValues: Record<string, string>) => void;
   /** One-time execution via the agent's invoke endpoint. */
   runOneTime: (paramValues: Record<string, string>) => void;
-  cancelSub: (subscriptionId: string, agentName: string) => void;
+  /** On-chain Subscriptions.cancel(onchainSubId) + backend record. */
+  cancelSub: (subscriptionId: string, onchainSubId: string, agentName: string) => void;
+  /** The subscription id currently being cancelled (for per-row UI), or null. */
+  cancellingId: string | null;
   showToast: (msg: string) => void;
 }
 
@@ -96,6 +104,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const cancelMut = useCancelSubscription();
   const onboardMut = useOnboard();
   const { subscribeOnChain, phase: txPhase } = useSubscribeOnChain();
+  const { cancelOnChain } = useCancelOnChain();
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const [onboardOpen, setOnboardOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -252,17 +262,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const cancelSub = useCallback(
-    (subscriptionId: string, agentName: string) => {
+    async (subscriptionId: string, onchainSubId: string, agentName: string) => {
       if (!address) return;
-      cancelMut.mutate(
-        { subscriptionId, address },
-        {
-          onSuccess: () => showToast(`Cancelled ${agentName} · active until period end`),
-          onError: (e) => showToast(errMessage(e, "couldn’t cancel")),
-        },
-      );
+      setCancellingId(subscriptionId);
+      try {
+        // 1. On-chain: Subscriptions.cancel(id) sets the permit expiry to now
+        //    so no further cycles can ever be pulled. Without this the backend
+        //    record changes but the subscription stays live on-chain.
+        if (onchainSubId) {
+          try {
+            await cancelOnChain(onchainSubId as `0x${string}`);
+          } catch (e) {
+            showToast(errMessage(e, "couldn’t cancel on-chain"));
+            return;
+          }
+        }
+
+        // 2. Backend: record the cancellation.
+        await new Promise<void>((resolve) =>
+          cancelMut.mutate(
+            { subscriptionId, address },
+            {
+              onSuccess: () => {
+                showToast(`Cancelled ${agentName} · no further charges`);
+                resolve();
+              },
+              onError: (e) => {
+                showToast(errMessage(e, "cancelled on-chain, but couldn’t update record"));
+                resolve();
+              },
+            },
+          ),
+        );
+      } finally {
+        setCancellingId(null);
+      }
     },
-    [address, cancelMut, showToast],
+    [address, cancelOnChain, cancelMut, showToast],
   );
 
   const subscribePhase =
@@ -291,6 +327,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       confirmSubscribe,
       runOneTime,
       cancelSub,
+      cancellingId,
       showToast,
     }),
     [
@@ -310,6 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       confirmSubscribe,
       runOneTime,
       cancelSub,
+      cancellingId,
       showToast,
     ],
   );

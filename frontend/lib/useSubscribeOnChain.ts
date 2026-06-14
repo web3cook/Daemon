@@ -176,3 +176,56 @@ export function useSubscribeOnChain() {
 
   return { subscribeOnChain, phase };
 }
+
+export type CancelPhase = "idle" | "switching" | "cancelling";
+
+export const CANCEL_PHASE_LABEL: Record<Exclude<CancelPhase, "idle">, string> = {
+  switching: "switching network…",
+  cancelling: "cancelling on-chain…",
+};
+
+/**
+ * Cancels a subscription on-chain via Subscriptions.cancel(id). This sets the
+ * permit expiry to now so no further cycles can be pulled. The id is the
+ * bytes32 on-chain subscription id (onchain_sub_id), not the backend ulid.
+ */
+export function useCancelOnChain() {
+  const { chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: CONTRACT_CHAIN.id });
+  const [phase, setPhase] = useState<CancelPhase>("idle");
+
+  const cancelOnChain = useCallback(
+    async (onchainSubId: `0x${string}`): Promise<`0x${string}`> => {
+      if (!SUBSCRIPTIONS_ADDRESS) {
+        throw new Error("contract addresses not configured: set NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS");
+      }
+      if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
+
+      try {
+        if (chainId !== CONTRACT_CHAIN.id) {
+          setPhase("switching");
+          await switchChainAsync({ chainId: CONTRACT_CHAIN.id });
+        }
+
+        setPhase("cancelling");
+        const hash = await writeContractAsync({
+          address: SUBSCRIPTIONS_ADDRESS,
+          abi: subscriptionsAbi,
+          functionName: "cancel",
+          chainId: CONTRACT_CHAIN.id,
+          ...(await getGasFees(publicClient)),
+          args: [onchainSubId],
+        });
+        await publicClient.waitForTransactionReceipt({ hash });
+        return hash;
+      } finally {
+        setPhase("idle");
+      }
+    },
+    [chainId, publicClient, switchChainAsync, writeContractAsync],
+  );
+
+  return { cancelOnChain, phase };
+}
