@@ -74,7 +74,16 @@ const DURATION_OPTS: { months: number; label: string }[] = [
   { months: 12, label: "12 months" },
 ];
 
+// Short-lived durations for the "every 5 min" testing interval, so a few
+// execution cycles happen without needing a year-long permit window.
+const TEST_DURATION_OPTS: { hours: number; label: string }[] = [
+  { hours: 1, label: "1 hour" },
+  { hours: 6, label: "6 hours" },
+  { hours: 24, label: "24 hours" },
+];
+
 const MONTH_SECONDS = 30 * 24 * 60 * 60;
+const HOUR_SECONDS = 60 * 60;
 
 function SubscribeModal() {
   const {
@@ -91,16 +100,19 @@ function SubscribeModal() {
 
   const [mode, setMode] = useState<SubMode>("subscribe");
   const [months, setMonths] = useState(3);
+  const [testHours, setTestHours] = useState(1);
   const [params, setParams] = useState<Record<string, string>>({});
 
   const agentKey = pendingSub?.agentId ?? null;
   const canSubscribe = !!(pendingSub?.subPrice && pendingSub?.serviceAddress);
   const canOneTime = !!pendingSub?.oneTimePrice;
+  const isTestInterval = pendingSub?.billingInterval === "test_5min";
 
   // Reset and default to whichever mode the agent supports.
   useEffect(() => {
     setMode(canSubscribe ? "subscribe" : "one_time");
     setMonths(3);
+    setTestHours(1);
     setParams({});
   }, [agentKey, canSubscribe]);
 
@@ -108,16 +120,22 @@ function SubscribeModal() {
   const intervalSecs = pendingSub
     ? billingIntervalSeconds(pendingSub.billingInterval)
     : MONTH_SECONDS;
+  const durationSecs = isTestInterval ? testHours * HOUR_SECONDS : months * MONTH_SECONDS;
   const estimatedPayments = useMemo(
-    () => Math.max(1, Math.floor((months * MONTH_SECONDS) / intervalSecs)),
-    [months, intervalSecs],
+    () => Math.max(1, Math.floor(durationSecs / intervalSecs)),
+    [durationSecs, intervalSecs],
   );
 
   if (!pendingSub) return null;
 
   const subPriceLabel = pendingSub.subPrice ? formatMoney(pendingSub.subPrice) : "";
   const oneTimeLabel = pendingSub.oneTimePrice ? formatMoney(pendingSub.oneTimePrice) : "";
-  const period = pendingSub.billingInterval === "weekly" ? "wk" : "mo";
+  const period =
+    pendingSub.billingInterval === "weekly"
+      ? "wk"
+      : pendingSub.billingInterval === "test_5min"
+        ? "5min"
+        : "mo";
   const payMethod = wallet ? `usdc · ${wallet.addr}` : "usdc · wallet";
   const busy = subscribePending || oneTimePending;
 
@@ -217,16 +235,27 @@ function SubscribeModal() {
             <div className="field">
               <label className="field-label">HOW LONG?</label>
               <div className="duration-grid">
-                {DURATION_OPTS.map((d) => (
-                  <button
-                    key={d.months}
-                    className={`duration-opt${months === d.months ? " on" : ""}`}
-                    onClick={() => setMonths(d.months)}
-                    disabled={busy}
-                  >
-                    {d.label}
-                  </button>
-                ))}
+                {isTestInterval
+                  ? TEST_DURATION_OPTS.map((d) => (
+                      <button
+                        key={d.hours}
+                        className={`duration-opt${testHours === d.hours ? " on" : ""}`}
+                        onClick={() => setTestHours(d.hours)}
+                        disabled={busy}
+                      >
+                        {d.label}
+                      </button>
+                    ))
+                  : DURATION_OPTS.map((d) => (
+                      <button
+                        key={d.months}
+                        className={`duration-opt${months === d.months ? " on" : ""}`}
+                        onClick={() => setMonths(d.months)}
+                        disabled={busy}
+                      >
+                        {d.label}
+                      </button>
+                    ))}
               </div>
             </div>
 
@@ -242,7 +271,10 @@ function SubscribeModal() {
               <div className="confirm-row">
                 <span className="k">duration</span>
                 <span>
-                  {months} month{months > 1 ? "s" : ""} · ~{estimatedPayments} payment
+                  {isTestInterval
+                    ? `${testHours} hour${testHours > 1 ? "s" : ""}`
+                    : `${months} month${months > 1 ? "s" : ""}`}{" "}
+                  · ~{estimatedPayments} payment
                   {estimatedPayments > 1 ? "s" : ""}
                 </span>
               </div>
@@ -259,7 +291,7 @@ function SubscribeModal() {
               <button
                 className="btn-confirm"
                 disabled={busy || missingRequired}
-                onClick={() => confirmSubscribe(months * MONTH_SECONDS, params)}
+                onClick={() => confirmSubscribe(durationSecs, params)}
               >
                 {subscribePhase ?? `confirm · ${subPriceLabel}/${period}`}
               </button>

@@ -46,7 +46,12 @@ export default function AgentDetailPage() {
   const canSubscribe =
     agent.mode !== "one_time" && !!agent.sub_price && !!agent.service_address;
   const canOneTime = agent.mode !== "subscription" && !!agent.one_time_price;
-  const period = agent.payment_frequency === "weekly" ? "wk" : "mo";
+  const period =
+    agent.payment_frequency === "weekly"
+      ? "wk"
+      : agent.payment_frequency === "test_5min"
+        ? "5min"
+        : "mo";
 
   const openModal = () =>
     requestSubscribe({

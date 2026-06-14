@@ -1,7 +1,7 @@
 // Types mirror API_SPEC.md (snake_case). Keep both in sync.
 
 export type AgentMode = "subscription" | "one_time" | "both";
-export type BillingInterval = "weekly" | "monthly";
+export type BillingInterval = "weekly" | "monthly" | "test_5min";
 export type SubscriptionStatus = "active" | "cancelled" | "expired" | "past_due";
 export type AgentStatus = "draft" | "live" | "paused" | "delisted";
 export type RunKind = "subscription" | "one_time";
@@ -133,6 +133,24 @@ export interface SubscriberRow {
   last_payment_time: string | null;
 }
 
+/** A run on one of a creator's agents, with the subscriber who triggered it. */
+export interface CreatorRun {
+  run_id: string;
+  agent_id: string;
+  agent: string;
+  agent_logo: string | null;
+  user_address: string;
+  handle: string | null;
+  subscription_id: string | null;
+  kind: RunKind;
+  amount: Money;
+  status_message: string | null;
+  link: string | null;
+  success: boolean;
+  tx_hash: string | null;
+  ran_at: string;
+}
+
 // ── request payloads ──────────────────────────────
 
 export interface RegisterAgentInput {
@@ -222,6 +240,11 @@ export interface CreatorAgentListDetails {
 
 export interface SubscriberListDetails {
   subscribers: SubscriberRow[];
+  pagination: Pagination;
+}
+
+export interface CreatorRunListDetails {
+  runs: CreatorRun[];
   pagination: Pagination;
 }
 

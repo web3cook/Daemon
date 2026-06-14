@@ -145,6 +145,12 @@ userRouter.post('/runs', async (req, res) => {
   const countRes = await query<{ count: string }>('SELECT COUNT(*) FROM runs WHERE user_id = $1', [user.user_id])
   const totalItems = parseInt(countRes.rows[0]!.count)
 
+  const spentRes = await query<{ total: string | null }>(
+    'SELECT SUM(amount) AS total FROM runs WHERE user_id = $1 AND success = true',
+    [user.user_id],
+  )
+  const totalSpent = Number(spentRes.rows[0]?.total ?? 0)
+
   const rows = await query<{
     run_id: string
     agent_id: string
@@ -170,7 +176,7 @@ userRouter.post('/runs', async (req, res) => {
   const runs = rows.rows.map(r => ({
     run_id: r.run_id,
     agent_id: r.agent_id,
-    agent_name: r.agent_name,
+    agent: r.agent_name,
     agent_logo: r.agent_logo,
     subscription_id: r.subscription_id,
     kind: r.kind,
@@ -184,6 +190,7 @@ userRouter.post('/runs', async (req, res) => {
 
   ok(res, 200, 'Data fetched successfully', {
     runs,
+    summary: { total_spent: money(totalSpent, 'USDC') },
     pagination: { page, limit, total_items: totalItems, total_pages: Math.ceil(totalItems / limit) },
   })
 })

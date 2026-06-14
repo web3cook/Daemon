@@ -1,24 +1,27 @@
+import { randomUUID } from 'node:crypto'
 import { encodeAbiParameters, formatUnits } from 'viem'
 import { logger }                           from '../logger.js'
 import { TrustScoreError, GasCeilingError, ExecutionError } from '../errors.js'
 import { withRetry }                        from '../utils/retry.js'
 import { SubscriptionsABI, ValidationRegistryABI } from '../contracts/index.js'
+import { query }             from '../db/pool.js'
 import type { Clients }     from '../chain/client.js'
 import type { X402Client }  from '../x402/client.js'
 import type { ClaudeAgent } from '../agent/claude.js'
 import { config }           from '../config.js'
 
-// Reflects the deployed Subscription struct (Subscriptions.sol) — all
-// timing/amount fields are uint256, decoded by viem as bigint.
+// Reflects the deployed Subscription struct (Subscriptions.sol). Timing
+// fields are uint48/uint32, decoded by viem as `number`; amountPerCycle is
+// uint96, decoded as `bigint`.
 interface SubscriptionData {
   subscriber:            `0x${string}`
   service:               `0x${string}`
   spendToken:            `0x${string}`
   amountPerCycle:        bigint
-  interval:              bigint
-  lastExecutionTime:     bigint
-  subscriptionStartTime: bigint
-  permitExpiry:          bigint
+  interval:              number
+  lastExecutionTime:     number
+  subscriptionStartTime: number
+  permitExpiry:          number
 }
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -51,18 +54,18 @@ export class Executor {
       return
     }
 
-    const nowSecs = BigInt(Math.floor(Date.now() / 1000))
+    const nowSecs = Math.floor(Date.now() / 1000)
 
     // ── 2. Timing and expiry checks ──────────────────────────────────────────
     if (sub.permitExpiry <= nowSecs) {
-      log.debug({ permitExpiry: sub.permitExpiry.toString() }, 'permit expired — skipping')
+      log.debug({ permitExpiry: sub.permitExpiry }, 'permit expired — skipping')
       return
     }
 
     const nextDue   = sub.lastExecutionTime + sub.interval
     const remaining = nextDue - nowSecs
     if (nowSecs < nextDue) {
-      log.debug({ remainingSecs: remaining.toString() }, 'not due yet — skipping')
+      log.debug({ remainingSecs: remaining }, 'not due yet — skipping')
       return
     }
 
@@ -186,5 +189,48 @@ export class Executor {
     }
 
     log.info({ block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() }, 'confirmed')
+
+    // Only record to the DB once the tx is confirmed successful on-chain —
+    // failed/reverted attempts are logged (see scheduler) but not persisted.
+    await this.recordRun(subId, sub, txHash)
+  }
+
+  // Writes a successful execute() to the shared DB so the subscriber and
+  // creator dashboards can show execution history. Looks up the internal
+  // subscription/agent/user ids by the on-chain subscription id.
+  private async recordRun(
+    subId: `0x${string}`,
+    sub: SubscriptionData,
+    txHash: `0x${string}`,
+  ): Promise<void> {
+    const subRes = await query<{ id: string; user_id: string; agent_id: string }>(
+      'SELECT id, user_id, agent_id FROM subscriptions WHERE onchain_sub_id = $1',
+      [subId],
+    )
+    const subRow = subRes.rows[0]
+    if (!subRow) {
+      logger.warn({ subId: subId.slice(0, 10) }, 'recordRun: no matching subscription row')
+      return
+    }
+
+    const amount = formatUnits(sub.amountPerCycle, 6)
+    const link   = `https://sepolia.arbiscan.io/tx/${txHash}`
+
+    await query(
+      `INSERT INTO runs (run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, ran_at)
+       VALUES ($1,$2,$3,$4,'subscription',$5,'USDC',$6,$7,true,$8, now())`,
+      [`run_${randomUUID()}`, subRow.agent_id, subRow.user_id, subRow.id, amount, 'Subscription executed successfully', link, txHash],
+    )
+
+    await query(
+      `UPDATE subscriptions
+       SET usage_count = usage_count + 1,
+           last_payment_amount = $1,
+           last_payment_time = now(),
+           next_payment_amount = $1,
+           next_payment_time = now() + ($2 || ' seconds')::interval
+       WHERE id = $3`,
+      [amount, sub.interval.toString(), subRow.id],
+    )
   }
 }

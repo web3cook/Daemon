@@ -9,6 +9,7 @@ import {
   getCreatorEarnings,
   listAgents,
   listCreatorAgents,
+  listCreatorRuns,
   listSubscribers,
   listUserRuns,
   listUserSubscriptions,
@@ -34,6 +35,8 @@ export const queryKeys = {
   subscribers: (address?: string, agentId?: string) =>
     ["subscribers", address, agentId] as const,
   earnings: (address?: string) => ["earnings", address] as const,
+  creatorRuns: (address?: string, agentId?: string) =>
+    ["creator-runs", address, agentId] as const,
 };
 
 // ── marketplace ───────────────────────────────────
@@ -68,6 +71,7 @@ export function useUserRuns(address?: string, page = 1, limit = 20) {
     queryKey: queryKeys.runs(address, page),
     queryFn: () => listUserRuns(address!, page, limit),
     enabled: !!address,
+    refetchInterval: 30_000,
   });
 }
 
@@ -94,6 +98,15 @@ export function useCreatorEarnings(address?: string) {
     queryKey: queryKeys.earnings(address),
     queryFn: () => getCreatorEarnings(address!),
     enabled: !!address,
+  });
+}
+
+export function useCreatorRuns(address?: string, agentId?: string) {
+  return useQuery({
+    queryKey: queryKeys.creatorRuns(address, agentId),
+    queryFn: () => listCreatorRuns(address!, agentId),
+    enabled: !!address,
+    refetchInterval: 30_000,
   });
 }
 

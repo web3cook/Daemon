@@ -7,6 +7,7 @@ import type {
   CancelSubscriptionDetails,
   CreateSubscriptionDetails,
   CreatorAgentListDetails,
+  CreatorRunListDetails,
   EarningsDetails,
   NonceDetails,
   RecordRunDetails,
@@ -185,4 +186,13 @@ export function listSubscribers(userAddress: string, agentId: string, page = 1, 
 
 export function getCreatorEarnings(userAddress: string) {
   return apiPost<EarningsDetails>("/creator/earnings", { user_address: userAddress });
+}
+
+export function listCreatorRuns(userAddress: string, agentId?: string, page = 1, limit = 20) {
+  return apiPost<CreatorRunListDetails>("/creator/agents/runs", {
+    user_address: userAddress,
+    agent_id: agentId,
+    page,
+    limit,
+  });
 }

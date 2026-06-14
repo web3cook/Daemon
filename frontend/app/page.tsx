@@ -59,7 +59,14 @@ export default function MarketplacePage() {
                   {a.sub_price ? (
                     <>
                       {formatMoney(a.sub_price, { cents: false })}
-                      <span className="price-unit">/{a.payment_frequency === "weekly" ? "wk" : "mo"}</span>
+                      <span className="price-unit">
+                        /
+                        {a.payment_frequency === "weekly"
+                          ? "wk"
+                          : a.payment_frequency === "test_5min"
+                            ? "5min"
+                            : "mo"}
+                      </span>
                     </>
                   ) : a.one_time_price ? (
                     <>

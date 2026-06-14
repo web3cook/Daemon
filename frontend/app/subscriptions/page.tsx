@@ -70,7 +70,12 @@ export default function SubscriptionsPage() {
         <div className="row-stack subs">
           {subs.map((s) => {
             const price = s.next_payment_amount ?? s.last_payment_amount;
-            const period = s.billing_interval === "weekly" ? "wk" : "mo";
+            const period =
+              s.billing_interval === "weekly"
+                ? "wk"
+                : s.billing_interval === "test_5min"
+                  ? "5min"
+                  : "mo";
             return (
               <div key={s.id} className="row-card">
                 <Avatar name={s.agent} logo={s.logo} />
