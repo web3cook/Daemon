@@ -51,7 +51,9 @@ export default function AgentDetailPage() {
       ? "wk"
       : agent.payment_frequency === "test_5min"
         ? "5min"
-        : "mo";
+        : agent.payment_frequency === "test_2min"
+          ? "2min"
+          : "mo";
 
   const openModal = () =>
     requestSubscribe({

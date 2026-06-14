@@ -74,8 +74,8 @@ const DURATION_OPTS: { months: number; label: string }[] = [
   { months: 12, label: "12 months" },
 ];
 
-// Short-lived durations for the "every 5 min" testing interval, so a few
-// execution cycles happen without needing a year-long permit window.
+// Short-lived durations for the fast testing intervals (every 5 / 2 min), so a
+// few execution cycles happen without needing a year-long permit window.
 const TEST_DURATION_OPTS: { hours: number; label: string }[] = [
   { hours: 1, label: "1 hour" },
   { hours: 6, label: "6 hours" },
@@ -106,7 +106,9 @@ function SubscribeModal() {
   const agentKey = pendingSub?.agentId ?? null;
   const canSubscribe = !!(pendingSub?.subPrice && pendingSub?.serviceAddress);
   const canOneTime = !!pendingSub?.oneTimePrice;
-  const isTestInterval = pendingSub?.billingInterval === "test_5min";
+  const isTestInterval =
+    pendingSub?.billingInterval === "test_5min" ||
+    pendingSub?.billingInterval === "test_2min";
 
   // Reset and default to whichever mode the agent supports.
   useEffect(() => {
@@ -135,7 +137,9 @@ function SubscribeModal() {
       ? "wk"
       : pendingSub.billingInterval === "test_5min"
         ? "5min"
-        : "mo";
+        : pendingSub.billingInterval === "test_2min"
+          ? "2min"
+          : "mo";
   const payMethod = wallet ? `usdc · ${wallet.addr}` : "usdc · wallet";
   const busy = subscribePending || oneTimePending;
 
