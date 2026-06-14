@@ -9,7 +9,7 @@ import { useApp } from "@/lib/store";
 
 export default function SubscriptionsPage() {
   const router = useRouter();
-  const { wallet, openWalletModal, cancelSub } = useApp();
+  const { wallet, openWalletModal, cancelSub, cancellingId } = useApp();
   const address = wallet?.address;
 
   const subsQuery = useUserSubscriptions(address);
@@ -101,8 +101,12 @@ export default function SubscriptionsPage() {
                   manage
                 </button>
                 {s.status === "active" && (
-                  <button className="btn-quiet" onClick={() => cancelSub(s.id, s.agent)}>
-                    cancel
+                  <button
+                    className="btn-quiet"
+                    disabled={cancellingId === s.id}
+                    onClick={() => cancelSub(s.id, s.onchain_sub_id, s.agent)}
+                  >
+                    {cancellingId === s.id ? "cancelling…" : "cancel"}
                   </button>
                 )}
               </div>
