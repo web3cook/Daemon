@@ -65,7 +65,9 @@ export default function MarketplacePage() {
                           ? "wk"
                           : a.payment_frequency === "test_5min"
                             ? "5min"
-                            : "mo"}
+                            : a.payment_frequency === "test_2min"
+                              ? "2min"
+                              : "mo"}
                       </span>
                     </>
                   ) : a.one_time_price ? (

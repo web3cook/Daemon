@@ -1,7 +1,7 @@
 // Types mirror API_SPEC.md (snake_case). Keep both in sync.
 
 export type AgentMode = "subscription" | "one_time" | "both";
-export type BillingInterval = "weekly" | "monthly" | "test_5min";
+export type BillingInterval = "weekly" | "monthly" | "test_5min" | "test_2min";
 export type SubscriptionStatus = "active" | "cancelled" | "expired" | "past_due";
 export type AgentStatus = "draft" | "live" | "paused" | "delisted";
 export type RunKind = "subscription" | "one_time";

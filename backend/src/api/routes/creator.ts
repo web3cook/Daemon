@@ -13,7 +13,7 @@ export const creatorRouter = Router()
 
 const VALID_CATEGORIES = new Set(['finance', 'productivity', 'career', 'engineering', 'research', 'other'])
 const VALID_MODES = new Set(['subscription', 'one_time', 'both'])
-const VALID_PAYMENT_FREQUENCIES = new Set(['weekly', 'monthly', 'test_5min'])
+const VALID_PAYMENT_FREQUENCIES = new Set(['weekly', 'monthly', 'test_5min', 'test_2min'])
 
 function validateAgentPayload(body: {
   name?: string
@@ -48,7 +48,7 @@ function validateAgentPayload(body: {
         errors['interval_seconds'] = 'must be > 0'
       }
       if (body.payment_frequency && !VALID_PAYMENT_FREQUENCIES.has(body.payment_frequency)) {
-        errors['payment_frequency'] = 'must be weekly, monthly, or test_5min'
+        errors['payment_frequency'] = 'must be weekly, monthly, test_5min, or test_2min'
       }
     }
     if (body.mode === 'one_time' || body.mode === 'both') {

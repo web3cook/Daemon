@@ -104,11 +104,13 @@ const FREQ_OPTS: { key: BillingInterval; label: string; hint: string }[] = [
   { key: "weekly", label: "weekly", hint: "Paid every 7 days" },
   { key: "monthly", label: "monthly", hint: "Paid every 30 days" },
   { key: "test_5min", label: "every 5 min", hint: "Testing only — paid every 5 minutes" },
+  { key: "test_2min", label: "every 2 min", hint: "Testing only — paid every 2 minutes" },
 ];
 
 function freqUnit(freq: BillingInterval): string {
   if (freq === "weekly") return "wk";
   if (freq === "test_5min") return "5min";
+  if (freq === "test_2min") return "2min";
   return "mo";
 }
 

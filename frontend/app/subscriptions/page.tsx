@@ -75,7 +75,9 @@ export default function SubscriptionsPage() {
                 ? "wk"
                 : s.billing_interval === "test_5min"
                   ? "5min"
-                  : "mo";
+                  : s.billing_interval === "test_2min"
+                    ? "2min"
+                    : "mo";
             return (
               <div key={s.id} className="row-card">
                 <Avatar name={s.agent} logo={s.logo} />

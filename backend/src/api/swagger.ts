@@ -317,7 +317,7 @@ export const swaggerDocument = {
                   mode: { type: 'string', enum: ['subscription', 'one_time', 'both'] },
                   sub_price_amount: { type: 'string' },
                   interval_seconds: { type: 'integer' },
-                  payment_frequency: { type: 'string', enum: ['weekly', 'monthly'] },
+                  payment_frequency: { type: 'string', enum: ['weekly', 'monthly', 'test_5min', 'test_2min'] },
                   one_time_price_amount: { type: 'string' },
                   param_schema: { type: 'array', items: { type: 'object' } },
                   service_address: { type: 'string' },
