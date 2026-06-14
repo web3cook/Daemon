@@ -1,6 +1,4 @@
-import SubscriptionsABI from './abis/Subscriptions.json' with { type: 'json' }
-import ValidationRegistryABI from './abis/ValidationRegistry.json' with { type: 'json' }
-
+import ERC20ABI from './abis/ERC20.json' with { type: 'json' }
 
 // TestAggregator.swap() — only the one function the agent needs to encode calldata for
 export const TestAggregatorSwapABI = [{
@@ -16,4 +14,4 @@ export const TestAggregatorSwapABI = [{
   outputs: [],
 }] as const
 
-export { SubscriptionsABI, ValidationRegistryABI }
+export { ERC20ABI }

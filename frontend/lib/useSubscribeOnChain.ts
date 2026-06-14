@@ -79,7 +79,10 @@ export function useSubscribeOnChain() {
         // chose. 5-min buffer matches the contracts' Subscribe script so a
         // later permit can't cut an earlier subscription's window short.
         const permitExpiry = now + durationSecs + 300;
-        const cycles = BigInt(Math.floor(durationSecs / intervalSecs) + 1);
+        // Must match Subscriptions.subscribe()'s on-chain check exactly:
+        // executionCount = (permitExpiry - now) / interval. Using a smaller
+        // cycle count here causes PermitAmountTooLow to revert on-chain.
+        const cycles = BigInt(Math.floor((durationSecs + 300) / intervalSecs));
         // Approve only what this subscription can pull over its lifetime:
         // amount per cycle times the number of cycles in the chosen duration.
         const totalAmount = amountPerCycle * cycles;
@@ -175,6 +178,116 @@ export function useSubscribeOnChain() {
   );
 
   return { subscribeOnChain, phase };
+}
+
+export interface OneTimePermit {
+  owner: `0x${string}`;
+  permitSingle: {
+    details: { token: `0x${string}`; amount: string; expiration: number; nonce: number };
+    spender: `0x${string}`;
+    sigDeadline: string;
+  };
+  signature: `0x${string}`;
+}
+
+/**
+ * Signs a Permit2 PermitSingle authorising `spender` (the platform wallet) to
+ * pull `amount` of USDC once, on behalf of the connected wallet. Used to pay
+ * a one-time agent fee — the backend submits permit() + transferFrom() and
+ * pays the gas, so the user only signs (no on-chain tx here beyond the
+ * one-time USDC -> Permit2 approval, shared with subscriptions).
+ */
+export function useOneTimePermit() {
+  const { address, chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const { signTypedDataAsync } = useSignTypedData();
+  const publicClient = usePublicClient({ chainId: CONTRACT_CHAIN.id });
+  const [phase, setPhase] = useState<SubscribePhase>("idle");
+
+  const signOneTimePermit = useCallback(
+    async (amount: bigint, spender: `0x${string}`): Promise<OneTimePermit> => {
+      if (!address) throw new Error("wallet not connected");
+      if (!USDC_ADDRESS) throw new Error("contract addresses not configured");
+      if (!publicClient) throw new Error("no RPC client for Arbitrum Sepolia");
+
+      try {
+        if (chainId !== CONTRACT_CHAIN.id) {
+          setPhase("switching");
+          await switchChainAsync({ chainId: CONTRACT_CHAIN.id });
+        }
+
+        // One-time USDC -> Permit2 approval (shared with the subscribe flow).
+        const allowance = await publicClient.readContract({
+          address: USDC_ADDRESS,
+          abi: erc20Abi,
+          functionName: "allowance",
+          args: [address, PERMIT2_ADDRESS],
+        });
+        if (allowance < amount) {
+          setPhase("approving");
+          const approveHash = await writeContractAsync({
+            address: USDC_ADDRESS,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [PERMIT2_ADDRESS, maxUint256],
+            chainId: CONTRACT_CHAIN.id,
+            ...(await getGasFees(publicClient)),
+          });
+          await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        }
+
+        setPhase("permit");
+        const now = Math.floor(Date.now() / 1000);
+        const [, , nonce] = await publicClient.readContract({
+          address: PERMIT2_ADDRESS,
+          abi: permit2Abi,
+          functionName: "allowance",
+          args: [address, USDC_ADDRESS, spender],
+        });
+        const permitSingle = {
+          details: {
+            token: USDC_ADDRESS,
+            amount,
+            expiration: now + 10 * 60,
+            nonce,
+          },
+          spender,
+          sigDeadline: BigInt(now + 10 * 60),
+        };
+        const signature = await signTypedDataAsync({
+          domain: {
+            name: "Permit2",
+            chainId: CONTRACT_CHAIN.id,
+            verifyingContract: PERMIT2_ADDRESS,
+          },
+          types: permit2Types,
+          primaryType: "PermitSingle",
+          message: permitSingle,
+        });
+
+        return {
+          owner: address,
+          permitSingle: {
+            details: {
+              token: permitSingle.details.token,
+              amount: permitSingle.details.amount.toString(),
+              expiration: permitSingle.details.expiration,
+              nonce: permitSingle.details.nonce,
+            },
+            spender: permitSingle.spender,
+            sigDeadline: permitSingle.sigDeadline.toString(),
+          },
+          signature,
+        };
+      } finally {
+        setPhase("idle");
+      }
+    },
+    [address, chainId, publicClient, signTypedDataAsync, switchChainAsync, writeContractAsync],
+  );
+
+  return { signOneTimePermit, phase };
 }
 
 export type CancelPhase = "idle" | "switching" | "cancelling";
