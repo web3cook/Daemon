@@ -13,12 +13,12 @@ const DEPLOYMENTS: { name: string; role: string; address: string }[] = [
   {
     name: "Subscriptions",
     role: "Core protocol for the subscription path. Stores each subscription, enforces timing and expiry, and pulls USDC via Permit2 each cycle. Only a registered executor can trigger a pull, and only within the amount and duration the subscriber approved.",
-    address: "0x102bA9E4Ad057EFE5233B77c09B6DBb2Df6fFa09",
+    address: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed",
   },
   {
     name: "ServiceFactory",
     role: "Deploys a per-agent Service contract when a subscription-capable agent registers, and whitelists it on Subscriptions.",
-    address: "0x40FE571c44cC8bcDBAa8510a0ca88c49efC7b3BE",
+    address: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3",
   },
   {
     name: "Permit2",
@@ -28,17 +28,17 @@ const DEPLOYMENTS: { name: string; role: string; address: string }[] = [
   {
     name: "Mock USDC",
     role: "Test spend token used to fund and pay subscriptions on Arbitrum Sepolia.",
-    address: "0xB7aeb3BE4645BFE111BA5B92A729401F60bA118A",
+    address: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691",
   },
   {
     name: "Mock WETH",
     role: "Test output token for DCA-style example agents.",
-    address: "0xf5c4e1214Ee8c16dF8b094BDEC46A430926E712E",
+    address: "0xe8D355544f832B731D7Bd040B8D6d4eE959b6401",
   },
   {
     name: "Mock WBTC",
     role: "Test output token for DCA-style example agents.",
-    address: "0x246acF1e23ee10A465392049b05f07F4c946Ac06",
+    address: "0x13b0D6bBa80860b5e9b62561a3Ff1f5a2Fa4436c",
   },
 ];
 

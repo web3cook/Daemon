@@ -16,7 +16,13 @@ import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { parseUnits, stringToHex } from "viem";
 import { shortenAddress } from "./wagmi";
 import { ApiError } from "./api/client";
-import { useCancelSubscription, useInvokeAgent, useOnboard, useSubscribe } from "./api/hooks";
+import {
+  useCancelSubscription,
+  useInvokeAgent,
+  useOnboard,
+  usePlatformConfig,
+  useSubscribe,
+} from "./api/hooks";
 import { type InvokeAgentDetails } from "./api/endpoints";
 import { USDC_DECIMALS, billingIntervalSeconds } from "./contracts";
 import {
@@ -26,7 +32,6 @@ import {
   useOneTimePermit,
   useSubscribeOnChain,
 } from "./useSubscribeOnChain";
-import { PLATFORM_WALLET_ADDRESS } from "./contracts";
 import type { AgentMode, BillingInterval, Money, ParamField } from "./api/types";
 
 export type Role = "sub" | "cre";
@@ -109,6 +114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { subscribeOnChain, phase: txPhase } = useSubscribeOnChain();
   const { cancelOnChain } = useCancelOnChain();
   const { signOneTimePermit } = useOneTimePermit();
+  const { data: platformConfig } = usePlatformConfig();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const [onboardOpen, setOnboardOpen] = useState(false);
@@ -257,13 +263,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const runOneTime = useCallback(
     async (paramValues: Record<string, string>) => {
       if (!pendingSub || !pendingSub.oneTimePrice) return;
-      if (!PLATFORM_WALLET_ADDRESS) {
+      const platformWalletAddress = platformConfig?.platform_wallet_address;
+      if (!platformWalletAddress) {
         showToast("platform wallet not configured");
         return;
       }
       try {
         const amount = parseUnits(pendingSub.oneTimePrice.amount, USDC_DECIMALS);
-        const permit = await signOneTimePermit(amount, PLATFORM_WALLET_ADDRESS);
+        const permit = await signOneTimePermit(amount, platformWalletAddress);
         invokeMut.mutate(
           { agentId: pendingSub.agentId, paramValues, permit },
           {
@@ -275,7 +282,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         showToast(errMessage(e, "payment signature failed"));
       }
     },
-    [pendingSub, invokeMut, signOneTimePermit, showToast],
+    [pendingSub, invokeMut, signOneTimePermit, showToast, platformConfig],
   );
 
   const cancelSub = useCallback(

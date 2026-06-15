@@ -7,6 +7,7 @@ import { userRouter } from './routes/user.js'
 import { marketplaceRouter } from './routes/marketplace.js'
 import { subscriptionsRouter } from './routes/subscriptions.js'
 import { creatorRouter } from './routes/creator.js'
+import { configRouter } from './routes/config.js'
 import { swaggerDocument } from './swagger.js'
 import { fail } from './response.js'
 
@@ -41,6 +42,7 @@ export function buildApp(): express.Express {
   v1.use('/agents', marketplaceRouter)
   v1.use('/subscriptions', subscriptionsRouter)
   v1.use('/creator', creatorRouter)
+  v1.use('/config', configRouter)
 
   app.use('/api/v1', v1)
 

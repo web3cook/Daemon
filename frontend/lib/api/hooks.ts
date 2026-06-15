@@ -7,6 +7,7 @@ import {
   createSubscription,
   getAgent,
   getCreatorEarnings,
+  getPlatformConfig,
   invokeAgent,
   listAgents,
   listCreatorAgents,
@@ -39,7 +40,18 @@ export const queryKeys = {
   earnings: (address?: string) => ["earnings", address] as const,
   creatorRuns: (address?: string, agentId?: string) =>
     ["creator-runs", address, agentId] as const,
+  platformConfig: ["platform-config"] as const,
 };
+
+// ── platform config ────────────────────────────────
+
+export function usePlatformConfig() {
+  return useQuery({
+    queryKey: queryKeys.platformConfig,
+    queryFn: getPlatformConfig,
+    staleTime: Infinity,
+  });
+}
 
 // ── marketplace ───────────────────────────────────
 

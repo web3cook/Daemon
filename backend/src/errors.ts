@@ -40,10 +40,10 @@ export class PriceFeedError extends AppError {
   }
 }
 
-export class ClaudeResponseError extends AppError {
-  constructor(raw: string) {
-    super(`Claude returned non-JSON response: ${raw.slice(0, 80)}`, 'CLAUDE_RESPONSE_ERROR', { isOperational: true })
-    this.name = 'ClaudeResponseError'
+export class AgentEndpointError extends AppError {
+  constructor(subId: string) {
+    super(`agent for ${subId.slice(0, 10)}... has no endpoint_url registered`, 'AGENT_ENDPOINT_MISSING', { isOperational: true })
+    this.name = 'AgentEndpointError'
   }
 }
 
@@ -51,5 +51,12 @@ export class GasCeilingError extends AppError {
   constructor(gasGwei: number, ceilingGwei: number) {
     super(`gas ${gasGwei.toFixed(6)} gwei exceeds ceiling ${ceilingGwei} gwei`, 'GAS_CEILING', { isOperational: true })
     this.name = 'GasCeilingError'
+  }
+}
+
+export class X402PaymentError extends AppError {
+  constructor(url: string, message: string, cause?: unknown) {
+    super(`x402 payment to ${url} failed: ${message}`, 'X402_PAYMENT_ERROR', { cause, isOperational: true })
+    this.name = 'X402PaymentError'
   }
 }

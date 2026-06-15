@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { encodeAbiParameters, formatUnits } from 'viem'
 import { logger }                           from '../logger.js'
-import { TrustScoreError, GasCeilingError, ExecutionError } from '../errors.js'
+import { TrustScoreError, GasCeilingError, ExecutionError, AgentEndpointError } from '../errors.js'
 import { withRetry }                        from '../utils/retry.js'
 import { SubscriptionsABI, ValidationRegistryABI } from '../contracts/index.js'
 import { query }             from '../db/pool.js'
 import type { Clients }     from '../chain/client.js'
-import type { X402Client, RouteResponse } from '../x402/client.js'
-import type { ClaudeAgent, Decision } from '../agent/claude.js'
+import type { X402Client }  from '../x402/client.js'
 import { config }           from '../config.js'
 
 // Reflects the deployed Subscription struct (Subscriptions.sol). Timing
@@ -30,7 +29,6 @@ export class Executor {
   constructor(
     private readonly clients: Clients,
     private readonly x402:    X402Client,
-    private readonly claude:  ClaudeAgent | null,
   ) {}
 
   async tryExecute(subId: `0x${string}`): Promise<void> {
@@ -77,6 +75,9 @@ export class Executor {
       [subId],
     )
     const endpointUrl = agentRes.rows[0]?.endpoint_url ?? null
+    if (!endpointUrl) {
+      throw new AgentEndpointError(subId)
+    }
 
     // ── 4. ERC-8004 trust score check ─────────────────────────────────────────
     const score = await withRetry(
@@ -112,67 +113,27 @@ export class Executor {
     }
 
     // ── 6. Price + execution-safety decision + swap route ─────────────────────
-    let decision:          Decision
-    let routeResp:         RouteResponse
-    let settlementTxHash:  string | undefined
+    // Paid x402 call to the agent's own decision endpoint — settles a real
+    // on-chain USDC transferFrom() before returning the plan.
+    const result = await this.x402.decide(`${endpointUrl.replace(/\/$/, '')}/v1/decide`, {
+      token:        'ETH',
+      spendToken:   sub.spendToken,
+      outputToken:  config.outputTokenAddr,
+      spendAmount:  sub.amountPerCycle.toString(),
+      aggregator:   config.aggregatorAddr,
+      gasPriceGwei,
+    })
 
-    if (endpointUrl) {
-      // Paid x402 call to the agent's own decision endpoint — settles a real
-      // on-chain USDC transferFrom() before returning the plan.
-      const result = await this.x402.decide(`${endpointUrl.replace(/\/$/, '')}/v1/decide`, {
-        token:        'ETH',
-        spendToken:   sub.spendToken,
-        outputToken:  config.outputTokenAddr,
-        spendAmount:  sub.amountPerCycle.toString(),
-        aggregator:   config.aggregatorAddr,
-        gasPriceGwei,
-      })
+    log.info({
+      priceUsd:  result.price.price_usdc,
+      change24h: `${result.price.change_percent_24hr >= 0 ? '+' : ''}${result.price.change_percent_24hr.toFixed(2)}%`,
+      source:    result.price.source,
+      settlementTx: result.settlement.txHash,
+    }, 'price + decision fetched from agent (x402)')
 
-      log.info({
-        priceUsd:  result.price.price_usdc,
-        change24h: `${result.price.change_percent_24hr >= 0 ? '+' : ''}${result.price.change_percent_24hr.toFixed(2)}%`,
-        source:    result.price.source,
-        settlementTx: result.settlement.txHash,
-      }, 'price + decision fetched from agent (x402)')
-
-      decision         = result.decision
-      routeResp        = result.route
-      settlementTxHash = result.settlement.txHash
-    } else {
-      // Fallback: local price feed + local Claude safety check + local routing.
-      const priceResp = await this.x402.getPrice(config.x402PriceUrl, 'ETH')
-      log.info({
-        priceUsd:  priceResp.price_usdc,
-        change24h: `${priceResp.change_percent_24hr >= 0 ? '+' : ''}${priceResp.change_percent_24hr.toFixed(2)}%`,
-        source:    priceResp.source,
-      }, 'price fetched')
-
-      if (this.claude) {
-        decision = await this.claude.decide({
-          token:             'ETH',
-          priceUsdc:         priceResp.price_usdc,
-          changePercent24Hr: priceResp.change_percent_24hr,
-          amountUsdc:        formatUnits(sub.amountPerCycle, 6),
-          gasPriceGwei,
-        })
-      } else {
-        decision = {
-          should_execute:   true,
-          slippage_bps:     50,
-          anomaly_detected: false,
-          reasoning:        'deterministic fallback — no Claude safety oracle configured',
-        }
-      }
-
-      routeResp = await this.x402.getRoute(
-        config.x402RoutingUrl,
-        sub.spendToken,
-        config.outputTokenAddr,
-        config.aggregatorAddr,
-        sub.amountPerCycle,
-      )
-      log.info({ outputAmount: routeResp.output_amount }, 'route fetched')
-    }
+    const decision         = result.decision
+    const routeResp        = result.route
+    const settlementTxHash = result.settlement.txHash
 
     log.info({
       shouldExecute: decision.should_execute,
@@ -231,7 +192,7 @@ export class Executor {
 
     // Only record to the DB once the tx is confirmed successful on-chain —
     // failed/reverted attempts are logged (see scheduler) but not persisted.
-    await this.recordRun(subId, sub, txHash)
+    await this.recordRun(subId, sub, txHash, config.outputTokenAddr, outputAmount)
   }
 
   // Writes a successful execute() to the shared DB so the subscriber and
@@ -241,6 +202,8 @@ export class Executor {
     subId: `0x${string}`,
     sub: SubscriptionData,
     txHash: `0x${string}`,
+    outputToken: `0x${string}`,
+    outputAmount: bigint,
   ): Promise<void> {
     const subRes = await query<{ id: string; user_id: string; agent_id: string }>(
       'SELECT id, user_id, agent_id FROM subscriptions WHERE onchain_sub_id = $1',
@@ -252,13 +215,14 @@ export class Executor {
       return
     }
 
-    const amount = formatUnits(sub.amountPerCycle, 6)
-    const link   = `https://sepolia.arbiscan.io/tx/${txHash}`
+    const amount       = formatUnits(sub.amountPerCycle, 6)
+    const outputAmtStr = formatUnits(outputAmount, 18)
+    const link         = `https://sepolia.arbiscan.io/tx/${txHash}`
 
     await query(
-      `INSERT INTO runs (run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, ran_at)
-       VALUES ($1,$2,$3,$4,'subscription',$5,'USDC',$6,$7,true,$8, now())`,
-      [`run_${randomUUID()}`, subRow.agent_id, subRow.user_id, subRow.id, amount, 'Subscription executed successfully', link, txHash],
+      `INSERT INTO runs (run_id, agent_id, user_id, subscription_id, kind, amount, currency, status_message, link, success, tx_hash, output_token_address, output_amount, ran_at)
+       VALUES ($1,$2,$3,$4,'subscription',$5,'USDC',$6,$7,true,$8,$9,$10, now())`,
+      [`run_${randomUUID()}`, subRow.agent_id, subRow.user_id, subRow.id, amount, 'Subscription executed successfully', link, txHash, outputToken, outputAmtStr],
     )
 
     await query(

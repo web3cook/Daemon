@@ -16,10 +16,6 @@ export const SUBSCRIPTIONS_ADDRESS = process.env
 
 export const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as | `0x${string}` | undefined;
 
-/** Platform wallet that settles one-time agent payments (Permit2 spender). */
-export const PLATFORM_WALLET_ADDRESS = process.env
-  .NEXT_PUBLIC_PLATFORM_WALLET_ADDRESS as `0x${string}` | undefined;
-
 export const USDC_DECIMALS = 6;
 
 /** Canonical Permit2, same address on every EVM chain. */
@@ -174,6 +170,26 @@ export const permit2Abi = [
       { name: "amount", type: "uint160" },
       { name: "expiration", type: "uint48" },
       { name: "nonce", type: "uint48" },
+    ],
+  },
+] as const;
+
+/** Minimal ABI for Service.withdraw (creator sweeps accrued fees to feeReceiver). */
+export const serviceAbi = [
+  {
+    type: "function",
+    name: "withdraw",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "token", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "event",
+    name: "Withdrawn",
+    inputs: [
+      { name: "token", type: "address", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
     ],
   },
 ] as const;

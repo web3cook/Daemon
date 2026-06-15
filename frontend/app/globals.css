@@ -200,6 +200,28 @@ select option {
   cursor: pointer;
 }
 
+.faucet-btn {
+  padding: 7px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.faucet-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.faucet-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .wallet-pill {
   display: flex;
   align-items: center;

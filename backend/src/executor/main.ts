@@ -1,11 +1,10 @@
-import { config }              from './config.js'
-import { logger }              from './logger.js'
-import { AppError }            from './errors.js'
-import { buildClients }        from './chain/client.js'
-import { X402Client }          from './x402/client.js'
-import { ClaudeAgent }         from './agent/claude.js'
-import { Executor }            from './executor/executor.js'
-import { Scheduler }           from './scheduler/scheduler.js'
+import { config }       from '../config.js'
+import { logger }       from '../logger.js'
+import { AppError }     from '../errors.js'
+import { buildClients } from '../chain/client.js'
+import { X402Client }   from '../x402/client.js'
+import { Executor }     from './executor.js'
+import { Scheduler }    from '../scheduler/scheduler.js'
 
 // ── Global error handlers ──────────────────────────────────────────────────
 process.on('uncaughtException', (err: unknown) => {
@@ -23,13 +22,11 @@ async function main(): Promise<void> {
   const clients = buildClients(config.rpcUrl, config.chainId, config.privateKey)
   logger.info({ chainId: config.chainId, address: clients.account.address }, 'chain connected')
 
-  // ── x402 + Claude ──────────────────────────────────────────────────────────
+  // ── x402 ───────────────────────────────────────────────────────────────────
   const x402Client = new X402Client(clients, config.usdcAddr)
-  const claude     = config.anthropicApiKey ? new ClaudeAgent(config.anthropicApiKey) : null
-  logger.info({ claudeEnabled: claude !== null }, 'safety oracle initialised')
 
   // ── Executor + Scheduler ───────────────────────────────────────────────────
-  const executor  = new Executor(clients, x402Client, claude)
+  const executor  = new Executor(clients, x402Client)
   const scheduler = new Scheduler(executor, config.schedulerIntervalMs)
   scheduler.start()
 
