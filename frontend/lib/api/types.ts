@@ -282,6 +282,7 @@ export interface EarningsDetails {
     agent_name: string;
     subscriber_count: number;
     monthly_recurring_revenue: Money;
+    lifetime_revenue: Money;
     withdrawable_balance: Money;
     service_address: string | null;
   }[];

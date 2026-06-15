@@ -154,7 +154,11 @@ export default function EarningsPage() {
                 <div key={ae.agent_id} className="byagent-row">
                   <div className="byagent-name">{ae.agent_name}</div>
                   <div className="byagent-subs">{ae.subscriber_count} subscribers</div>
-                  <div className="byagent-mrr">{formatMoney(ae.monthly_recurring_revenue)}</div>
+                  <div className="byagent-mrr">
+                    {ae.subscriber_count > 0
+                      ? `${formatMoney(ae.monthly_recurring_revenue)}/mo`
+                      : `${formatMoney(ae.lifetime_revenue)} total`}
+                  </div>
                   {ae.service_address && (
                     <button
                       className="btn-ghost"

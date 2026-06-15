@@ -487,8 +487,8 @@ creatorRouter.post('/earnings', async (req, res) => {
 
   const user = await findOrCreateUser(user_address)
 
-  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null; service_address: string | null }>(
-    `SELECT a.agent_id, a.name, a.base_subscriber_count, a.service_address, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr
+  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null; service_address: string | null; lifetime: string | null }>(
+    `SELECT a.agent_id, a.name, a.base_subscriber_count, a.service_address, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr, COALESCE(rev.total, 0) AS lifetime
      FROM agents a
      LEFT JOIN (
        SELECT agent_id, COUNT(*)::int AS live_subs
@@ -500,6 +500,12 @@ creatorRouter.post('/earnings', async (req, res) => {
        WHERE s.status = 'active'
        GROUP BY s.agent_id
      ) mrr ON mrr.agent_id = a.agent_id
+     LEFT JOIN (
+       SELECT r.agent_id, SUM(r.amount) AS total
+       FROM runs r
+       WHERE r.success = true
+       GROUP BY r.agent_id
+     ) rev ON rev.agent_id = a.agent_id
      WHERE a.publisher_user_id = $1`,
     [user.user_id],
   )
@@ -581,6 +587,7 @@ creatorRouter.post('/earnings', async (req, res) => {
     agent_name: r.name,
     subscriber_count: r.base_subscriber_count + (r.live_subs ?? 0),
     monthly_recurring_revenue: money(r.mrr || '0', 'USDC'),
+    lifetime_revenue: money(r.lifetime || '0', 'USDC'),
     service_address: r.service_address,
   }))
 
