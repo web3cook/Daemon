@@ -4,23 +4,18 @@ include:
 x-backend-env: &backend-env
   # Database
   DATABASE_URL: postgres://sip:sip@postgres:5432/sip_daemon
-  DB_HOST: postgres
-  DB_PORT: "5432"
   API_PORT: "3001"
   CORS_ORIGIN: http://localhost:3000
   RPC_URL: https://sepolia-rollup.arbitrum.io/rpc
   CHAIN_ID: "421614"
-  PRIVATE_KEY: "0x1"
+  PRIVATE_KEY: "${PRIVATE_KEY}"
   SUBSCRIPTIONS_ADDR: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed"
-  SERVICE_FACTORY_ADDR: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3"
-  IDENTITY_REGISTRY_ADDR: "0x4517993f49F30F1Cc71ebE2e083c91fA41EeFa45"
+  SERVICE_FACTORY_ADDR: "0xA5f93514BDB527580f81AFBe583267EFefe3226c"
   VALIDATION_REGISTRY_ADDR: "0xb3E35540bb8862ac3b4A80Ac80ecbe7eC90b185b"
   AGGREGATOR_ADDR: "0xe4CB3caAA49c61F2593370138DEC7fdfd0643Cf7"
   USDC_ADDR: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
   OUTPUT_TOKEN_ADDR: "0xe8D355544f832B731D7Bd040B8D6d4eE959b6401"
-  MOCK_X402_ENABLED: "false"
-  COINCAP_KEY: ""
-  ANTHROPIC_API_KEY: "sk-ant..."
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
   # Block just before the current contracts were deployed (run-1781424293207.json,
   # first receipt at block 277075766). Starting at 0 would mean ~277M blocks to
   # scan in 10k-block chunks before any agent events are found.
@@ -71,12 +66,13 @@ services:
         condition: service_started
 
   # Executes due subscriptions on-chain (Subscriptions.execute) for the
-  # NightWatch agent (onchain_agent_id=9), polling the shared DB on a fixed
-  # interval.
+  # DCA agent (onchain_agent_id=16), polling the shared DB on a fixed
+  # interval. Same image as backend/indexer, different command.
   executor:
     build:
-      context: ./executor
+      context: ./backend
       dockerfile: Dockerfile
+    command: ["npm", "run", "executor:start"]
     environment:
       <<: *backend-env
       AGENT_ID: "16"
@@ -84,9 +80,6 @@ services:
       MIN_TRUST_SCORE: "0"
       MAX_GAS_GWEI: "0.1"
       SCHEDULER_INTERVAL_SECS: "30"
-      MOCK_X402_ENABLED: "true"
-      X402_PRICE_URL: "http://agent_dca:8402/price"
-      X402_ROUTING_URL: "http://agent_dca:8402/route"
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,11 +96,13 @@ services:
       # they must be build args, not runtime environment.
       args:
         NEXT_PUBLIC_API_BASE_URL: http://localhost:3001/api/v1
-        NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS: "0x91F9f2d566098EB22642D2f0a692352f45DD8bd3"
+        NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS: "0xA5f93514BDB527580f81AFBe583267EFefe3226c"
         NEXT_PUBLIC_SUBSCRIPTIONS_ADDRESS: "0xdeA11fC11A86a2c3bD70F5D37087C869F0bf88Ed"
         NEXT_PUBLIC_USDC_ADDRESS: "0x6Fd5c8aF495B2811288B9491932dc2bC079a9691"
-        NEXT_PUBLIC_WC_PROJECT_ID: "a18b96e3dc8664c11e0c480c08f4149f"
-        NEXT_PUBLIC_PLATFORM_WALLET_ADDRESS: "0xF96dD19c97906bEFF9f3A94002ae9bB7b4c0b034"
+        NEXT_PUBLIC_WETH_ADDRESS: "0xe8D355544f832B731D7Bd040B8D6d4eE959b6401"
+        NEXT_PUBLIC_WBTC_ADDRESS: "0x13b0D6bBa80860b5e9b62561a3Ff1f5a2Fa4436c"
+        NEXT_PUBLIC_AGGREGATOR_ADDRESS: "0xe4CB3caAA49c61F2593370138DEC7fdfd0643Cf7"
+        NEXT_PUBLIC_WC_PROJECT_ID: "${NEXT_PUBLIC_WC_PROJECT_ID}"
     ports:
       - "3000:3000"
     depends_on:

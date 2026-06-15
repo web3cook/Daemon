@@ -6,6 +6,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {Subscriptions}             from "../src/Subscriptions.sol";
 import {SIPService}                from "../src/SIPService.sol";
 import {ServiceFactory}            from "../src/ServiceFactory.sol";
+import {ServiceDeployer}           from "../src/ServiceDeployer.sol";
 import {ERC8004IdentityRegistry}   from "../src/ERC8004IdentityRegistry.sol";
 import {ERC8004ValidationRegistry} from "../src/ERC8004ValidationRegistry.sol";
 
@@ -80,9 +81,13 @@ contract DeployMainnet is Script {
         console.log("ValidationRegistry:", address(validationRegistry));
 
         // ── 3. ServiceFactory ─────────────────────────────────────────────────
+        ServiceDeployer serviceDeployer = new ServiceDeployer();
+        console.log("ServiceDeployer:", address(serviceDeployer));
+
         ServiceFactory serviceFactory = new ServiceFactory(
             address(subs),
-            address(identityRegistry)
+            address(identityRegistry),
+            address(serviceDeployer)
         );
         console.log("ServiceFactory:", address(serviceFactory));
 
@@ -91,7 +96,14 @@ contract DeployMainnet is Script {
 
         // ── 4. SIPService (example DCA agent, direct deploy) ────────────────
         uint256 sipAgentId = identityRegistry.register(agentCardURI);
+
+        address[] memory dcaOutputTokens = new address[](3);
+        dcaOutputTokens[0] = weth;
+        dcaOutputTokens[1] = wbtc;
+        dcaOutputTokens[2] = arb;
+
         SIPService sipService = new SIPService(
+            deployer,
             address(subs),
             treasury,
             usdc,
@@ -99,17 +111,15 @@ contract DeployMainnet is Script {
             sipInterval,
             sipAgentId,
             MAX_FEE_BPS,
-            aggregator
+            aggregator,
+            dcaOutputTokens,
+            0
         );
         console.log("SIPService:", address(sipService));
         console.log("SIP agentId:", sipAgentId);
 
         // ── 5. Wire up ────────────────────────────────────────────────────────
         subs.registerService(address(sipService));
-
-        sipService.addToken(weth);
-        sipService.addToken(wbtc);
-        sipService.addToken(arb);
 
         console.log("Service registered. Output tokens whitelisted:");
         console.log("  WETH:", weth);

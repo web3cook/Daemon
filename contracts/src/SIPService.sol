@@ -42,6 +42,7 @@ contract SIPService is Service, Pausable {
     error FeeTooHigh(uint256 given, uint256 max);
 
     constructor(
+        address _agent,
         address _subscriptions,
         address _feeReceiver,
         address _spendToken,
@@ -49,11 +50,21 @@ contract SIPService is Service, Pausable {
         uint32  _interval,
         uint256 _agentId,
         uint256 _maxFee,
-        address _aggregator
-    ) Service(msg.sender, _subscriptions, _feeReceiver, _spendToken, _minAmountPerCycle, _interval, _agentId) {
+        address _aggregator,
+        address[] memory _outputTokens,
+        uint256 _fee
+    ) Service(_agent, _subscriptions, _feeReceiver, _spendToken, _minAmountPerCycle, _interval, _agentId) {
         if (_aggregator == address(0)) revert ZeroAddress();
+        if (_fee > _maxFee) revert FeeTooHigh(_fee, _maxFee);
         MAX_FEE    = _maxFee;
         aggregator = _aggregator;
+        fee        = _fee;
+
+        for (uint256 i = 0; i < _outputTokens.length; i++) {
+            if (_outputTokens[i] == address(0)) revert ZeroAddress();
+            outputTokens[_outputTokens[i]] = true;
+            emit TokenAdded(_outputTokens[i]);
+        }
     }
 
     function setFee(uint256 _newFee) external onlyOwner {

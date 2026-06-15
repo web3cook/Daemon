@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { isAddress } from 'viem'
 import { query } from '../../db/pool.js'
-import { ok, fail, money } from '../response.js'
+import { ok, fail, money, tokenAmount } from '../response.js'
 import { findUserByAddress, findOrCreateUser, serializeUser } from '../userdb.js'
 import { serializeSubscription, type SubscriptionJoinRow } from '../serializers.js'
 import { getUsdcBalance } from '../chain.js'
@@ -164,9 +164,11 @@ userRouter.post('/runs', async (req, res) => {
     link: string | null
     success: boolean
     tx_hash: string | null
+    output_token_address: string | null
+    output_amount: string | null
     ran_at: Date
   }>(
-    `SELECT r.run_id, r.agent_id, a.name AS agent_name, a.logo AS agent_logo, r.subscription_id, r.kind, r.amount, r.currency, r.status_message, r.link, r.success, r.tx_hash, r.ran_at
+    `SELECT r.run_id, r.agent_id, a.name AS agent_name, a.logo AS agent_logo, r.subscription_id, r.kind, r.amount, r.currency, r.status_message, r.link, r.success, r.tx_hash, r.output_token_address, r.output_amount, r.ran_at
      FROM runs r
      JOIN agents a ON a.agent_id = r.agent_id
      WHERE r.user_id = $1 ORDER BY r.ran_at DESC LIMIT $2 OFFSET $3`,
@@ -181,6 +183,7 @@ userRouter.post('/runs', async (req, res) => {
     subscription_id: r.subscription_id,
     kind: r.kind,
     amount: money(r.amount, r.currency),
+    received: r.output_amount ? tokenAmount(r.output_amount, 'WETH') : null,
     status_message: r.status_message,
     link: r.link,
     success: r.success,

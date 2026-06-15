@@ -16,6 +16,14 @@ export function formatMoney(
   return isCurrencyDollar ? `$${body}` : `${body} ${money.currency}`;
 }
 
+/** Render a non-stablecoin token amount, e.g. `0.003142 WETH` (full precision matters at small sizes). */
+export function formatTokenAmount(money: Money | null | undefined): string {
+  if (!money || money.amount == null) return "-";
+  const n = Number(money.amount);
+  const body = n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 6 });
+  return `${body} ${money.currency}`;
+}
+
 /** Per-run usage line for a plan, e.g. `+ $0.50 / application`. */
 export function formatMeter(usagePrice: Money | null, usageUnit: string | null): string {
   if (!usagePrice || !usageUnit) return "";

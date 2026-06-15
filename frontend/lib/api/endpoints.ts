@@ -11,6 +11,7 @@ import type {
   CreatorRunListDetails,
   EarningsDetails,
   NonceDetails,
+  PlatformConfigDetails,
   RecordRunDetails,
   RegisterAgentInput,
   RunListDetails,
@@ -201,4 +202,10 @@ export function listCreatorRuns(userAddress: string, agentId?: string, page = 1,
     page,
     limit,
   });
+}
+
+// ── platform config ────────────────────────────────
+
+export function getPlatformConfig() {
+  return apiGet<PlatformConfigDetails>("/config");
 }

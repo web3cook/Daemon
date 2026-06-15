@@ -12,6 +12,15 @@ export const swaggerDocument = {
     }
   ],
   paths: {
+    '/api/v1/config': {
+      get: {
+        summary: 'Get platform config',
+        description: 'Returns public, non-secret platform info the frontend needs at runtime, such as the Permit2 spender address for one-time agent payments.',
+        responses: {
+          '200': { description: 'Platform config returned' }
+        }
+      }
+    },
     '/api/v1/auth/nonce': {
       post: {
         summary: 'Request wallet nonce',

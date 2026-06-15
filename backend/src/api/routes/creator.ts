@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { isAddress } from 'viem'
 import { query } from '../../db/pool.js'
-import { ok, fail, money } from '../response.js'
+import { ok, fail, money, tokenAmount } from '../response.js'
 import { findOrCreateUser } from '../userdb.js'
 import { newAgentId, newWithdrawalId } from '../ids.js'
 import { serializeAgentCard, normalizeParamSchema, type AgentRow } from '../serializers.js'
@@ -438,11 +438,13 @@ creatorRouter.post('/agents/runs', async (req, res) => {
     link: string | null
     success: boolean
     tx_hash: string | null
+    output_token_address: string | null
+    output_amount: string | null
     ran_at: Date
   }>(
     `SELECT r.run_id, r.agent_id, a.name AS agent_name, a.logo AS agent_logo,
             u.user_address, u.handle, r.subscription_id, r.kind, r.amount, r.currency,
-            r.status_message, r.link, r.success, r.tx_hash, r.ran_at
+            r.status_message, r.link, r.success, r.tx_hash, r.output_token_address, r.output_amount, r.ran_at
      FROM runs r
      JOIN agents a ON a.agent_id = r.agent_id
      JOIN users u ON u.user_id = r.user_id
@@ -461,6 +463,7 @@ creatorRouter.post('/agents/runs', async (req, res) => {
     subscription_id: r.subscription_id,
     kind: r.kind,
     amount: money(r.amount, r.currency),
+    received: r.output_amount ? tokenAmount(r.output_amount, 'WETH') : null,
     status_message: r.status_message,
     link: r.link,
     success: r.success,
@@ -484,8 +487,8 @@ creatorRouter.post('/earnings', async (req, res) => {
 
   const user = await findOrCreateUser(user_address)
 
-  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null; service_address: string | null }>(
-    `SELECT a.agent_id, a.name, a.base_subscriber_count, a.service_address, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr
+  const agentsRes = await query<{ agent_id: string; name: string; base_subscriber_count: number; live_subs: number | null; mrr: string | null; service_address: string | null; lifetime: string | null }>(
+    `SELECT a.agent_id, a.name, a.base_subscriber_count, a.service_address, COALESCE(sub.live_subs, 0) AS live_subs, COALESCE(mrr.total, 0) AS mrr, COALESCE(rev.total, 0) AS lifetime
      FROM agents a
      LEFT JOIN (
        SELECT agent_id, COUNT(*)::int AS live_subs
@@ -497,6 +500,12 @@ creatorRouter.post('/earnings', async (req, res) => {
        WHERE s.status = 'active'
        GROUP BY s.agent_id
      ) mrr ON mrr.agent_id = a.agent_id
+     LEFT JOIN (
+       SELECT r.agent_id, SUM(r.amount) AS total
+       FROM runs r
+       WHERE r.success = true
+       GROUP BY r.agent_id
+     ) rev ON rev.agent_id = a.agent_id
      WHERE a.publisher_user_id = $1`,
     [user.user_id],
   )
@@ -578,6 +587,8 @@ creatorRouter.post('/earnings', async (req, res) => {
     agent_name: r.name,
     subscriber_count: r.base_subscriber_count + (r.live_subs ?? 0),
     monthly_recurring_revenue: money(r.mrr || '0', 'USDC'),
+    lifetime_revenue: money(r.lifetime || '0', 'USDC'),
+    service_address: r.service_address,
   }))
 
   ok(res, 200, 'Data fetched successfully', {

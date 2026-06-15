@@ -20,6 +20,7 @@ interface SeedAgent {
   interval_seconds: number | null
   payment_frequency: string | null
   one_time_price_amount: number | null
+  agent_invoke_fee: number | null
   service_address: string | null
   onchain_agent_id: string | null
   endpoint_url: string | null
@@ -46,6 +47,7 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: 604800, // weekly
     payment_frequency: 'weekly',
     one_time_price_amount: null,
+    agent_invoke_fee: null,
     service_address: '0x102bA9E4Ad057EFE5233B77c09B6DBb2Df6fFa09',
     onchain_agent_id: '1',
     endpoint_url: 'http://agent_dca:8402'
@@ -68,6 +70,7 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: 2592000, // monthly
     payment_frequency: 'monthly',
     one_time_price_amount: null,
+    agent_invoke_fee: null,
     service_address: null,
     onchain_agent_id: null,
     endpoint_url: 'https://api.tidyagent.com/v1'
@@ -90,6 +93,7 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: 2592000,
     payment_frequency: 'monthly',
     one_time_price_amount: 0.50,
+    agent_invoke_fee: null,
     service_address: null,
     onchain_agent_id: null,
     endpoint_url: 'https://api.pathfinderagent.com/v1'
@@ -112,6 +116,7 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: null,
     payment_frequency: null,
     one_time_price_amount: 0.04,
+    agent_invoke_fee: null,
     service_address: null,
     onchain_agent_id: null,
     endpoint_url: 'https://api.clerkagent.com/v1'
@@ -134,6 +139,7 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: 2592000,
     payment_frequency: 'monthly',
     one_time_price_amount: null,
+    agent_invoke_fee: null,
     service_address: null,
     onchain_agent_id: null,
     endpoint_url: 'https://api.scribeagent.com/v1'
@@ -156,9 +162,33 @@ const AGENTS: SeedAgent[] = [
     interval_seconds: 2592000,
     payment_frequency: 'monthly',
     one_time_price_amount: null,
+    agent_invoke_fee: null,
     service_address: null,
     onchain_agent_id: null,
     endpoint_url: 'https://api.watchdogagent.com/v1'
+  },
+  {
+    slug: 'risk-analyzer',
+    name: 'Wallet Risk Analyzer',
+    category: 'finance',
+    tagline: 'risk-agent',
+    short_description: 'Scans a wallet\'s holdings and flags concentration, volatility and liquidity risks.',
+    description: 'Wallet Risk Analyzer reads a wallet\'s on-chain holdings, prices them live, and returns a plain-language report on concentration, volatility and liquidity risk with concrete suggestions.',
+    services: ['risk-report', 'portfolio-analysis'],
+    rating: 4.7,
+    rating_count: 120,
+    base_subscriber_count: 410,
+    publisher_name: 'SIP Labs',
+    mode: 'one_time',
+    sub_price_amount: null,
+    sub_price_currency: 'USDC',
+    interval_seconds: null,
+    payment_frequency: null,
+    one_time_price_amount: 0.10,
+    agent_invoke_fee: 0.05,
+    service_address: null,
+    onchain_agent_id: null,
+    endpoint_url: 'http://agent_risk_analyzer:8403'
   }
 ]
 
@@ -175,7 +205,7 @@ async function main(): Promise<void> {
           name=$2, icon=$3, logo=$4, category=$5, tagline=$6, short_description=$7, description=$8,
           services=$9, rating=$10, rating_count=$11, publisher_name=$12, mode=$13, sub_price_amount=$14,
           sub_price_currency=$15, interval_seconds=$16, payment_frequency=$17, one_time_price_amount=$18,
-          service_address=$19, onchain_agent_id=$20, endpoint_url=$21, base_subscriber_count=$22
+          service_address=$19, onchain_agent_id=$20, endpoint_url=$21, base_subscriber_count=$22, agent_invoke_fee=$23
          WHERE agent_id=$1`,
         [
           agentId, agent.name, `${CDN}/${agent.slug}/icon.png`, `${CDN}/${agent.slug}/logo.png`,
@@ -184,7 +214,8 @@ async function main(): Promise<void> {
           agent.sub_price_amount ? String(agent.sub_price_amount) : null,
           agent.sub_price_currency, agent.interval_seconds, agent.payment_frequency,
           agent.one_time_price_amount ? String(agent.one_time_price_amount) : null,
-          agent.service_address, agent.onchain_agent_id, agent.endpoint_url, agent.base_subscriber_count
+          agent.service_address, agent.onchain_agent_id, agent.endpoint_url, agent.base_subscriber_count,
+          agent.agent_invoke_fee ? String(agent.agent_invoke_fee) : null,
         ]
       )
     } else {
@@ -194,8 +225,8 @@ async function main(): Promise<void> {
           agent_id, slug, name, icon, logo, category, tagline, short_description, description,
           services, rating, rating_count, publisher_name, mode, sub_price_amount, sub_price_currency,
           interval_seconds, payment_frequency, one_time_price_amount, service_address, onchain_agent_id,
-          endpoint_url, base_subscriber_count, status, onchain, trust_score
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'live',true,80)`,
+          endpoint_url, base_subscriber_count, status, onchain, trust_score, agent_invoke_fee
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'live',true,80,$24)`,
         [
           agentId, agent.slug, agent.name, `${CDN}/${agent.slug}/icon.png`, `${CDN}/${agent.slug}/logo.png`,
           agent.category, agent.tagline, agent.short_description, agent.description, agent.services,
@@ -203,7 +234,8 @@ async function main(): Promise<void> {
           agent.sub_price_amount ? String(agent.sub_price_amount) : null,
           agent.sub_price_currency, agent.interval_seconds, agent.payment_frequency,
           agent.one_time_price_amount ? String(agent.one_time_price_amount) : null,
-          agent.service_address, agent.onchain_agent_id, agent.endpoint_url, agent.base_subscriber_count
+          agent.service_address, agent.onchain_agent_id, agent.endpoint_url, agent.base_subscriber_count,
+          agent.agent_invoke_fee ? String(agent.agent_invoke_fee) : null,
         ]
       )
       logger.info({ slug: agent.slug, agentId }, 'agent seeded')

@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS idx_agents_service       ON agents(service_address);
 CREATE INDEX IF NOT EXISTS idx_agents_onchain_agent ON agents(onchain_agent_id);
 
+-- Platform's cut of one_time_price_amount for one_time/both agents (smallest
+-- units in USDC decimal terms, e.g. 0.05). The executor pays the agent's own
+-- x402 /v1/invoke demand out of this cut; the remainder goes to the creator.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_invoke_fee NUMERIC(18,6);
+
 CREATE TABLE IF NOT EXISTS subscriptions (
   id                  TEXT PRIMARY KEY,               -- ulid (internal)
   user_id             TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -97,6 +102,11 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_runs_user         ON runs(user_id);
 CREATE INDEX IF NOT EXISTS idx_runs_agent        ON runs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_runs_subscription ON runs(subscription_id);
+
+-- DCA runs: the output token + amount the subscriber actually received from
+-- the swap (in addition to the USDC `amount` spent).
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS output_token_address TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS output_amount NUMERIC(36,18);
 
 CREATE TABLE IF NOT EXISTS withdrawals (
   withdrawal_id   TEXT PRIMARY KEY,                  -- ulid

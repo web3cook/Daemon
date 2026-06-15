@@ -1,18 +1,110 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useCreatorAgents, useCreatorRuns } from "@/lib/api/hooks";
-import { formatDate, formatMoney } from "@/lib/api/format";
+import { useCreatorAgents, useCreatorRuns, useUpdateAgent } from "@/lib/api/hooks";
+import { formatDate, formatMoney, formatTokenAmount } from "@/lib/api/format";
 import { shortenAddress } from "@/lib/wagmi";
 import Avatar from "@/components/Avatar";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
+import type { AgentCategory, CreatorAgent } from "@/lib/api/types";
+
+const CATEGORY_OPTS: AgentCategory[] = [
+  "finance",
+  "productivity",
+  "career",
+  "engineering",
+  "research",
+  "other",
+];
+
+function EditListingModal({
+  agent,
+  onClose,
+}: {
+  agent: CreatorAgent;
+  onClose: () => void;
+}) {
+  const { wallet, showToast } = useApp();
+  const updateAgent = useUpdateAgent();
+  const [name, setName] = useState(agent.name);
+  const [category, setCategory] = useState<AgentCategory>(agent.category);
+  const [status, setStatus] = useState<"live" | "paused">(
+    agent.status === "paused" ? "paused" : "live",
+  );
+
+  const save = () => {
+    if (!wallet) return;
+    updateAgent.mutate(
+      { user_address: wallet.address, agent_id: agent.agent_id, name, category, status },
+      {
+        onSuccess: () => {
+          showToast("Listing updated");
+          onClose();
+        },
+        onError: (e) => showToast(e instanceof Error ? e.message : "couldn’t update listing"),
+      },
+    );
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+        <div className="kicker">{"// EDIT LISTING"}</div>
+        <div className="modal-title roomy">{agent.name}</div>
+
+        <div className="field">
+          <label className="field-label">NAME</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label className="field-label">CATEGORY</label>
+          <select
+            className="input"
+            value={category}
+            onChange={(e) => setCategory(e.target.value as AgentCategory)}
+          >
+            {CATEGORY_OPTS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label className="field-label">STATUS</label>
+          <select
+            className="input"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as "live" | "paused")}
+          >
+            <option value="live">live</option>
+            <option value="paused">paused</option>
+          </select>
+        </div>
+
+        <div className="confirm-actions">
+          <button className="btn-cancel" onClick={onClose} disabled={updateAgent.isPending}>
+            cancel
+          </button>
+          <button className="btn-confirm" onClick={save} disabled={updateAgent.isPending}>
+            {updateAgent.isPending ? "saving…" : "save changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function CreatorAgentsPage() {
   const router = useRouter();
   const { wallet, openWalletModal } = useApp();
   const { data, isLoading, isError, error, refetch } = useCreatorAgents(wallet?.address);
   const runsQuery = useCreatorRuns(wallet?.address);
+  const [editing, setEditing] = useState<CreatorAgent | null>(null);
 
   const agents = data?.agents ?? [];
   const runs = runsQuery.data?.runs ?? [];
@@ -71,7 +163,9 @@ export default function CreatorAgentsPage() {
                 {formatMoney(c.monthly_recurring_revenue)}
                 <span className="price-unit"> mrr</span>
               </div>
-              <button className="btn-ghost">edit listing</button>
+              <button className="btn-ghost" onClick={() => setEditing(c)}>
+                edit listing
+              </button>
             </div>
           ))}
         </div>
@@ -93,6 +187,7 @@ export default function CreatorAgentsPage() {
                   <div className="invoice-desc">
                     {r.agent} · {r.handle ?? shortenAddress(r.user_address)}
                     {r.status_message ? ` · ${r.status_message}` : ""}
+                    {r.received ? ` · received ${formatTokenAmount(r.received)}` : ""}
                   </div>
                   <div className="invoice-amt">{formatMoney(r.amount, { cents: true })}</div>
                   <div className={`pill${r.success ? " ok" : ""}`}>{r.kind}</div>
@@ -101,6 +196,16 @@ export default function CreatorAgentsPage() {
             </div>
           )}
         </div>
+      )}
+
+      {editing && (
+        <EditListingModal
+          agent={editing}
+          onClose={() => {
+            setEditing(null);
+            refetch();
+          }}
+        />
       )}
     </div>
   );

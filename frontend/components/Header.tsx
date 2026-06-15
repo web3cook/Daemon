@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useApp } from "@/lib/store";
+import { useFaucet } from "@/lib/useFaucet";
 
 const SUB_TABS = [
   { href: "/", label: "Marketplace" },
@@ -17,7 +18,21 @@ const CRE_TABS = [
 export default function Header() {
   const pathname = usePathname();
   const router = useRouter();
-  const { wallet, openWalletModal, disconnectWallet } = useApp();
+  const { wallet, openWalletModal, disconnectWallet, showToast } = useApp();
+  const { mint, isMinting, faucetAmount } = useFaucet();
+
+  const handleFaucet = async () => {
+    if (!wallet) {
+      openWalletModal();
+      return;
+    }
+    try {
+      await mint();
+      showToast(`minted ${faucetAmount} USDC to your wallet`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "faucet mint failed");
+    }
+  };
 
   const isCreator = pathname.startsWith("/creator");
   const tabs = isCreator ? CRE_TABS : SUB_TABS;
@@ -72,6 +87,9 @@ export default function Header() {
           <a href="/docs" className="docs-link">
             docs ↗
           </a>
+          <button className="faucet-btn" onClick={handleFaucet} disabled={isMinting}>
+            {isMinting ? "minting…" : "get test usdc"}
+          </button>
           {wallet ? (
             <button
               className="wallet-pill"

@@ -102,6 +102,8 @@ export interface Run {
   agent: string;
   kind: RunKind;
   amount: Money;
+  /** Output token received from a DCA swap (e.g. WETH); null for non-swap runs. */
+  received: Money | null;
   status_message: string | null;
   link: string | null;
   success: boolean;
@@ -144,6 +146,8 @@ export interface CreatorRun {
   subscription_id: string | null;
   kind: RunKind;
   amount: Money;
+  /** Output token received from a DCA swap (e.g. WETH); null for non-swap runs. */
+  received: Money | null;
   status_message: string | null;
   link: string | null;
   success: boolean;
@@ -278,6 +282,13 @@ export interface EarningsDetails {
     agent_name: string;
     subscriber_count: number;
     monthly_recurring_revenue: Money;
+    lifetime_revenue: Money;
     withdrawable_balance: Money;
+    service_address: string | null;
   }[];
+}
+
+export interface PlatformConfigDetails {
+  /** Permit2 spender for one-time agent payments; the executor's signer address. */
+  platform_wallet_address: `0x${string}`;
 }

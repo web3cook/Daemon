@@ -4,6 +4,7 @@ import { useCreatorEarnings } from "@/lib/api/hooks";
 import { formatDate, formatMoney, formatMonth } from "@/lib/api/format";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
+import { useWithdraw } from "@/lib/useWithdraw";
 
 function compactMoney(amount: string): string {
   const n = Number(amount);
@@ -11,8 +12,19 @@ function compactMoney(amount: string): string {
 }
 
 export default function EarningsPage() {
-  const { wallet, openWalletModal } = useApp();
+  const { wallet, openWalletModal, showToast } = useApp();
   const { data, isLoading, isError, error, refetch } = useCreatorEarnings(wallet?.address);
+  const { withdraw, isWithdrawing } = useWithdraw();
+
+  const handleWithdraw = async (serviceAddress: string) => {
+    try {
+      await withdraw(serviceAddress as `0x${string}`);
+      showToast("withdrawal sent");
+      refetch();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "withdraw failed");
+    }
+  };
 
   const head = (
     <div className="page-head">
@@ -142,7 +154,20 @@ export default function EarningsPage() {
                 <div key={ae.agent_id} className="byagent-row">
                   <div className="byagent-name">{ae.agent_name}</div>
                   <div className="byagent-subs">{ae.subscriber_count} subscribers</div>
-                  <div className="byagent-mrr">{formatMoney(ae.monthly_recurring_revenue)}</div>
+                  <div className="byagent-mrr">
+                    {ae.subscriber_count > 0
+                      ? `${formatMoney(ae.monthly_recurring_revenue)}/mo`
+                      : `${formatMoney(ae.lifetime_revenue)} total`}
+                  </div>
+                  {ae.service_address && (
+                    <button
+                      className="btn-ghost"
+                      disabled={isWithdrawing}
+                      onClick={() => handleWithdraw(ae.service_address!)}
+                    >
+                      {isWithdrawing ? "withdrawing…" : "withdraw"}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useUserRuns, useUserSubscriptions } from "@/lib/api/hooks";
-import { formatDate, formatMoney } from "@/lib/api/format";
+import { formatDate, formatMoney, formatTokenAmount } from "@/lib/api/format";
 import Avatar from "@/components/Avatar";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useApp } from "@/lib/store";
@@ -150,6 +150,7 @@ export default function SubscriptionsPage() {
                   <div className="invoice-desc">
                     {r.agent}
                     {r.status_message ? ` · ${r.status_message}` : ""}
+                    {r.received ? ` · received ${formatTokenAmount(r.received)}` : ""}
                   </div>
                   <div className="invoice-amt">{formatMoney(r.amount, { cents: true })}</div>
                   <div className={`pill${r.success ? " ok" : ""}`}>{r.kind}</div>
