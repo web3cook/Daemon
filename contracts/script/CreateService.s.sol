@@ -107,6 +107,7 @@ contract CreateService is Script {
             uint256 agentId = IERC8004IdentityRegistry(identityRegistry).register(agentCardURI);
 
             SIPService sipService = new SIPService(
+                deployer,
                 subscriptions,
                 feeReceiver,
                 spendToken,
@@ -114,13 +115,14 @@ contract CreateService is Script {
                 interval,
                 agentId,
                 maxFeeBps,
-                aggregator
+                aggregator,
+                outputTokens,
+                0
             );
 
             Subscriptions(subscriptions).registerService(address(sipService));
 
             for (uint256 i = 0; i < outputTokens.length; i++) {
-                sipService.addToken(outputTokens[i]);
                 console.log("[dca] Added output token:", outputTokens[i]);
             }
 

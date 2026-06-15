@@ -18,6 +18,23 @@ export const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as | `0x${strin
 
 export const USDC_DECIMALS = 6;
 
+export const WETH_ADDRESS = process.env.NEXT_PUBLIC_WETH_ADDRESS as `0x${string}` | undefined;
+
+export const WBTC_ADDRESS = process.env.NEXT_PUBLIC_WBTC_ADDRESS as `0x${string}` | undefined;
+
+export const AGGREGATOR_ADDRESS = process.env
+  .NEXT_PUBLIC_AGGREGATOR_ADDRESS as `0x${string}` | undefined;
+
+/** Output tokens a DCA agent can swap into, available for selection at registration. */
+export const DCA_OUTPUT_TOKENS: { symbol: string; address?: `0x${string}` }[] = [
+  { symbol: "WETH", address: WETH_ADDRESS },
+  { symbol: "WBTC", address: WBTC_ADDRESS },
+];
+
+/** Max fee (bps) hard cap and default starting fee for newly created SIPServices. */
+export const SIP_SERVICE_MAX_FEE_BPS = 100;
+export const SIP_SERVICE_DEFAULT_FEE_BPS = 0;
+
 /** Canonical Permit2, same address on every EVM chain. */
 export const PERMIT2_ADDRESS =
   "0x000000000022D473030F116dDEE9F6B43aC78BA3" as `0x${string}`;
@@ -55,6 +72,26 @@ export const serviceFactoryAbi = [
       { name: "amount", type: "uint256" },
       { name: "interval", type: "uint32" },
       { name: "agentCardURI", type: "string" },
+    ],
+    outputs: [
+      { name: "service", type: "address" },
+      { name: "agentId", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "createSwapService",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "feeReceiver", type: "address" },
+      { name: "spendToken", type: "address" },
+      { name: "minAmountPerCycle", type: "uint256" },
+      { name: "interval", type: "uint32" },
+      { name: "agentCardURI", type: "string" },
+      { name: "maxFee", type: "uint256" },
+      { name: "aggregator", type: "address" },
+      { name: "outputTokens", type: "address[]" },
+      { name: "fee", type: "uint256" },
     ],
     outputs: [
       { name: "service", type: "address" },

@@ -8,8 +8,12 @@ import { useRegisterAgent } from "@/lib/api/hooks";
 import { useApp } from "@/lib/store";
 import { getGasFees } from "@/lib/gas";
 import {
+  AGGREGATOR_ADDRESS,
   CONTRACT_CHAIN,
+  DCA_OUTPUT_TOKENS,
   SERVICE_FACTORY_ADDRESS,
+  SIP_SERVICE_DEFAULT_FEE_BPS,
+  SIP_SERVICE_MAX_FEE_BPS,
   USDC_ADDRESS,
   USDC_DECIMALS,
   billingIntervalSeconds,
@@ -47,7 +51,8 @@ type FieldError =
   | "subPrice"
   | "oneTimePrice"
   | "icon"
-  | "logo";
+  | "logo"
+  | "outputTokens";
 
 interface ParamDraft {
   label: string;
@@ -68,6 +73,8 @@ interface RegForm {
   oneTimePrice: string;
   freq: BillingInterval;
   params: ParamDraft[];
+  isDca: boolean;
+  outputTokens: string[];
 }
 
 const INITIAL: RegForm = {
@@ -83,6 +90,8 @@ const INITIAL: RegForm = {
   oneTimePrice: "1",
   freq: "monthly",
   params: [],
+  isDca: false,
+  outputTokens: [],
 };
 
 const CATEGORIES: { value: AgentCategory; label: string }[] = [
@@ -206,8 +215,19 @@ export default function RegisterAgentPage() {
     if (chips.length === 0) next.services = "at least one service tag is required";
     if (hasSub && !(Number(reg.subPrice) > 0)) next.subPrice = "must be greater than 0";
     if (hasOneTime && !(Number(reg.oneTimePrice) > 0)) next.oneTimePrice = "must be greater than 0";
+    if (hasSub && reg.isDca && reg.outputTokens.length === 0) {
+      next.outputTokens = "select at least one output token";
+    }
     return next;
   };
+
+  const toggleOutputToken = (symbol: string) =>
+    setReg((r) => ({
+      ...r,
+      outputTokens: r.outputTokens.includes(symbol)
+        ? r.outputTokens.filter((s) => s !== symbol)
+        : [...r.outputTokens, symbol],
+    }));
 
   const addParam = () =>
     setReg((r) => ({ ...r, params: [...r.params, { label: "", type: "text", required: true }] }));
@@ -221,7 +241,9 @@ export default function RegisterAgentPage() {
 
   const period = freqUnit(reg.freq);
   const priceSummary = [
-    hasSub ? `$${reg.subPrice || "0"}/${period}` : null,
+    hasSub
+      ? `${reg.isDca ? "min " : ""}$${reg.subPrice || "0"}/${period}`
+      : null,
     hasOneTime ? `$${reg.oneTimePrice || "0"}/run` : null,
   ]
     .filter(Boolean)
@@ -235,6 +257,9 @@ export default function RegisterAgentPage() {
     { k: "LOGO", v: reg.logo.trim() || "-" },
     { k: "CATEGORY", v: catLabel },
     { k: "MODE", v: reg.mode.replace("_", " ") },
+    ...(hasSub && reg.isDca
+      ? [{ k: "OUTPUT TOKENS", v: reg.outputTokens.join(" · ") || "-" }]
+      : []),
     { k: "ENDPOINT", v: reg.endpoint || "-" },
     { k: "DESCRIPTION", v: reg.desc || "-" },
     { k: "SERVICES", v: chips.join(" · ") || "-" },
@@ -255,6 +280,11 @@ export default function RegisterAgentPage() {
       showToast("contract addresses not configured: set NEXT_PUBLIC_SERVICE_FACTORY_ADDRESS");
       return;
     }
+    const isDca = hasSub && reg.isDca;
+    if (isDca && !AGGREGATOR_ADDRESS) {
+      showToast("contract addresses not configured: set NEXT_PUBLIC_AGGREGATOR_ADDRESS");
+      return;
+    }
     const step1Errors = validateStep1();
     const step2Errors = validateStep2();
     if (Object.keys(step1Errors).length > 0 || Object.keys(step2Errors).length > 0) {
@@ -266,8 +296,9 @@ export default function RegisterAgentPage() {
     const agentCardURI = buildAgentCardURI(reg.name);
 
     // 1. On-chain registration. Subscription-capable agents deploy a Service
-    //    and mint identity (createService); one-time-only agents mint identity
-    //    only (registerAgent). Both return the ERC-8004 agentId via an event.
+    //    (createService) or, for DCA/swap agents, a SIPService (createSwapService);
+    //    one-time-only agents mint identity only (registerAgent). All three
+    //    return the ERC-8004 agentId via an event.
     let serviceAddress: string | null = null;
     let onchainAgentId: string;
     try {
@@ -279,7 +310,39 @@ export default function RegisterAgentPage() {
 
       setTxPhase("wallet");
       const gasFees = await getGasFees(publicClient);
-      if (hasSub) {
+      if (isDca) {
+        const outputTokenAddrs = DCA_OUTPUT_TOKENS.filter(
+          (t) => reg.outputTokens.includes(t.symbol) && t.address,
+        ).map((t) => t.address as `0x${string}`);
+        const hash = await writeContractAsync({
+          abi: serviceFactoryAbi,
+          address: SERVICE_FACTORY_ADDRESS,
+          functionName: "createSwapService",
+          chainId: CONTRACT_CHAIN.id,
+          ...gasFees,
+          args: [
+            wallet.address as `0x${string}`, // feeReceiver: creator's wallet
+            USDC_ADDRESS,
+            parseUnits(reg.subPrice || "0", USDC_DECIMALS), // minAmountPerCycle
+            billingIntervalSeconds(reg.freq),
+            agentCardURI,
+            BigInt(SIP_SERVICE_MAX_FEE_BPS),
+            AGGREGATOR_ADDRESS as `0x${string}`,
+            outputTokenAddrs,
+            BigInt(SIP_SERVICE_DEFAULT_FEE_BPS),
+          ],
+        });
+        setTxPhase("deploying");
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        const [created] = parseEventLogs({
+          abi: serviceFactoryAbi,
+          eventName: "ServiceCreated",
+          logs: receipt.logs,
+        });
+        if (!created) throw new Error("ServiceCreated event not found in receipt");
+        serviceAddress = created.args.service;
+        onchainAgentId = created.args.agentId.toString();
+      } else if (hasSub) {
         const hash = await writeContractAsync({
           abi: serviceFactoryAbi,
           address: SERVICE_FACTORY_ADDRESS,
@@ -529,6 +592,55 @@ export default function RegisterAgentPage() {
           {hasSub && (
             <div className="field">
               <label className="field-label">
+                AGENT TYPE <span className="hint">(what the subscription pays for)</span>
+              </label>
+              <div className="model-grid">
+                <button
+                  className={`model-opt${!reg.isDca ? " on" : ""}`}
+                  onClick={() => patch({ isDca: false })}
+                >
+                  <div className="model-opt-label">fixed service</div>
+                  <div className="model-opt-hint">Charges a fixed amount each cycle</div>
+                </button>
+                <button
+                  className={`model-opt${reg.isDca ? " on" : ""}`}
+                  onClick={() => patch({ isDca: true })}
+                >
+                  <div className="model-opt-label">DCA / token swap</div>
+                  <div className="model-opt-hint">
+                    Each cycle, swaps the subscriber&apos;s spend into a chosen token and sends it
+                    to them
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {hasSub && reg.isDca && (
+            <div className="field">
+              <label className="field-label">
+                OUTPUT TOKENS <span className="hint">(tokens this agent can swap into)</span>
+              </label>
+              <div className="model-grid">
+                {DCA_OUTPUT_TOKENS.map((t) => (
+                  <button
+                    key={t.symbol}
+                    className={`model-opt${reg.outputTokens.includes(t.symbol) ? " on" : ""}`}
+                    onClick={() => toggleOutputToken(t.symbol)}
+                    disabled={!t.address}
+                  >
+                    <div className="model-opt-label">{t.symbol}</div>
+                    <div className="model-opt-hint">{t.address ?? "not configured"}</div>
+                  </button>
+                ))}
+              </div>
+              {errors.outputTokens && <div className="field-error">{errors.outputTokens}</div>}
+            </div>
+          )}
+
+          {hasSub && (
+            <div className="field">
+              <label className="field-label">
                 PAYMENT FREQUENCY <span className="hint">(how often the agent gets paid)</span>
               </label>
               <div className="model-grid">
@@ -550,7 +662,9 @@ export default function RegisterAgentPage() {
             {hasSub && (
               <div className="field">
                 <label className="field-label">
-                  SUBSCRIPTION PRICE ($/{freqUnit(reg.freq).toUpperCase()})
+                  {reg.isDca
+                    ? `MINIMUM SPEND PER CYCLE ($/${freqUnit(reg.freq).toUpperCase()})`
+                    : `SUBSCRIPTION PRICE ($/${freqUnit(reg.freq).toUpperCase()})`}
                 </label>
                 <input
                   className={`input mono-input${errors.subPrice ? " has-error" : ""}`}

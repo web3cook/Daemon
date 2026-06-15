@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Service}                    from "./Service.sol";
+import {ServiceDeployer}            from "./ServiceDeployer.sol";
 import {Subscriptions}              from "./Subscriptions.sol";
 import {IERC8004IdentityRegistry}   from "./interfaces/IERC8004IdentityRegistry.sol";
 
 /// @title ServiceFactory
 /// @notice Platform entry point for agent registration. Deploys a dedicated
-///         Service per subscription agent, mints ERC-8004 identity, and
-///         registers the service with Subscriptions.
+///         Service or SIPService per subscription agent (based on the
+///         creator's choice), mints ERC-8004 identity, and registers the
+///         service with Subscriptions.
 contract ServiceFactory {
     address public immutable subscriptions;
     IERC8004IdentityRegistry public immutable identityRegistry;
+    ServiceDeployer public immutable serviceDeployer;
 
     mapping(address => address[]) public servicesByAgent;
     mapping(address => bool)      public isFactoryService;
@@ -32,11 +34,13 @@ contract ServiceFactory {
 
     error ZeroAddress();
 
-    constructor(address _subscriptions, address _identityRegistry) {
-        if (_subscriptions == address(0))     revert ZeroAddress();
-        if (_identityRegistry == address(0))  revert ZeroAddress();
+    constructor(address _subscriptions, address _identityRegistry, address _serviceDeployer) {
+        if (_subscriptions == address(0))    revert ZeroAddress();
+        if (_identityRegistry == address(0)) revert ZeroAddress();
+        if (_serviceDeployer == address(0))  revert ZeroAddress();
         subscriptions    = _subscriptions;
         identityRegistry = IERC8004IdentityRegistry(_identityRegistry);
+        serviceDeployer  = ServiceDeployer(_serviceDeployer);
     }
 
     /// @notice Deploy a Service for the caller, mint identity, and register with Subscriptions.
@@ -49,7 +53,7 @@ contract ServiceFactory {
     ) external returns (address service, uint256 agentId) {
         agentId = identityRegistry.registerFor(msg.sender, agentCardURI);
 
-        Service deployed = new Service(
+        service = serviceDeployer.deployService(
             msg.sender,
             subscriptions,
             feeReceiver,
@@ -58,7 +62,6 @@ contract ServiceFactory {
             interval,
             agentId
         );
-        service = address(deployed);
 
         Subscriptions(subscriptions).registerService(service);
 
@@ -69,6 +72,47 @@ contract ServiceFactory {
         agentIdByService[service] = agentId;
 
         emit ServiceCreated(msg.sender, service, spendToken, amount, feeReceiver, agentId);
+    }
+
+    /// @notice Deploy a SIPService (DCA swap service) for the caller, mint
+    ///         identity, and register with Subscriptions. `amount` is the
+    ///         minimum per-cycle spend — subscribers pick their own size.
+    function createSwapService(
+        address feeReceiver,
+        address spendToken,
+        uint256 minAmountPerCycle,
+        uint32  interval,
+        string calldata agentCardURI,
+        uint256 maxFee,
+        address aggregator,
+        address[] calldata outputTokens,
+        uint256 fee
+    ) external returns (address service, uint256 agentId) {
+        agentId = identityRegistry.registerFor(msg.sender, agentCardURI);
+
+        service = serviceDeployer.deploySIPService(
+            msg.sender,
+            subscriptions,
+            feeReceiver,
+            spendToken,
+            minAmountPerCycle,
+            interval,
+            agentId,
+            maxFee,
+            aggregator,
+            outputTokens,
+            fee
+        );
+
+        Subscriptions(subscriptions).registerService(service);
+
+        servicesByAgent[msg.sender].push(service);
+        isFactoryService[service] = true;
+        allServices.push(service);
+        serviceByAgentId[agentId] = service;
+        agentIdByService[service] = agentId;
+
+        emit ServiceCreated(msg.sender, service, spendToken, minAmountPerCycle, feeReceiver, agentId);
     }
 
     /// @notice Register a one-time-only agent identity with no Service contract.

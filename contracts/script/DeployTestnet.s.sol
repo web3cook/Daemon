@@ -5,6 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {Subscriptions}             from "../src/Subscriptions.sol";
 import {ServiceFactory}            from "../src/ServiceFactory.sol";
+import {ServiceDeployer}           from "../src/ServiceDeployer.sol";
 import {ERC8004IdentityRegistry}   from "../src/ERC8004IdentityRegistry.sol";
 import {ERC8004ValidationRegistry} from "../src/ERC8004ValidationRegistry.sol";
 import {TestERC20} from "./helpers/MockContracts.sol";
@@ -80,9 +81,13 @@ contract DeployTestnet is Script {
         console.log("ValidationRegistry:", address(validationRegistry));
 
         // ── 5. ServiceFactory ─────────────────────────────────────────────────
+        ServiceDeployer serviceDeployer = new ServiceDeployer();
+        console.log("ServiceDeployer:", address(serviceDeployer));
+
         ServiceFactory serviceFactory = new ServiceFactory(
             address(subs),
-            address(identityRegistry)
+            address(identityRegistry),
+            address(serviceDeployer)
         );
         console.log("ServiceFactory:", address(serviceFactory));
 
@@ -93,7 +98,11 @@ contract DeployTestnet is Script {
 
         // ── 7. Optional SIPService (uncomment when aggregator is deployed) ────
         // uint256 sipAgentId = identityRegistry.register("https://example.com/.well-known/agent.json");
+        // address[] memory dcaOutputTokens = new address[](2);
+        // dcaOutputTokens[0] = address(mockWETH);
+        // dcaOutputTokens[1] = address(mockWBTC);
         // SIPService sipService = new SIPService(
+        //     deployer,
         //     address(subs),
         //     deployer,
         //     address(mockUSDC),
@@ -101,11 +110,11 @@ contract DeployTestnet is Script {
         //     DEFAULT_INTERVAL,
         //     sipAgentId,
         //     MAX_FEE_BPS,
-        //     address(aggregator)
+        //     address(aggregator),
+        //     dcaOutputTokens,
+        //     0
         // );
         // subs.registerService(address(sipService));
-        // sipService.addToken(address(mockWETH));
-        // sipService.addToken(address(mockWBTC));
         // console.log("SIPService:", address(sipService));
 
         // ── 8. Mint test USDC so the deployer can create a subscription ───────
